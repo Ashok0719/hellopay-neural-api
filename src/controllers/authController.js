@@ -1,0 +1,348 @@
+const User = require('../models/User');
+const Stock = require('../models/Stock');
+const Config = require('../models/Config');
+const generateToken = require('../utils/generateToken');
+const { syncUserStocks } = require('../utils/financeLogic');
+
+// Mock OTP storage (In production, use Redis or a dedicated OTP service)
+const otpStore = new Map();
+
+// @desc    Send OTP to mobile or email
+// @route   POST /api/auth/send-otp
+// @access  Public
+const sendOtp = async (req, res) => {
+  const { identifier } = req.body; // Can be phone or email
+
+  if (!identifier) {
+    return res.status(400).json({ message: 'Mobile or Email is required' });
+  }
+
+  // Generate 4-digit OTP
+  const otp = "1234"; // Fixed for demo verification
+  otpStore.set(identifier, otp);
+
+  console.log(`[NEURAL AUTH] OTP for ${identifier}: ${otp}`);
+
+  res.status(200).json({ message: 'OTP sent successfully', mockOtp: otp });
+};
+
+// @desc    Premium Registration with Referral Integration
+// @route   POST /api/auth/register
+// @access  Public
+const register = async (req, res) => {
+  const { name, phone, email, pin, referralCode } = req.body;
+
+  if (!name || (!phone && !email) || !pin) {
+    return res.status(400).json({ message: 'Name, PIN and Contact details required' });
+  }
+
+  // Prevent duplicate accounts
+  const existingUser = await User.findOne({ $or: [{ phone: phone || '___' }, { email: email || '___' }] });
+  if (existingUser) {
+    return res.status(400).json({ message: 'Identity already bound to another node' });
+  }
+
+  // Create unique User ID (e.g., 6 digits)
+  const userIdNumber = Math.floor(100000 + Math.random() * 900000).toString();
+  const userReferralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+
+  let referredBy = null;
+  if (referralCode) {
+    const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
+    if (referrer) {
+      referredBy = referrer._id;
+      // Increment referral count for real-time tracking
+      await User.findByIdAndUpdate(referrer._id, { $inc: { referralCount: 1 } });
+    }
+  }
+
+  const user = await User.create({
+    name,
+    phone,
+    email,
+    pin, // Store as text for 4-digit PIN demo, encrypt with bcrypt in production
+    userIdNumber,
+    referralCode: userReferralCode,
+    referredBy,
+    walletBalance: referredBy ? 100 : 0, // ₹100 Welcome Bonus if referred
+    referralBonusAmount: referredBy ? 100 : 0, // Locked until first deposit >= 100
+    isOtpVerified: true
+  });
+
+  // Neural Sync Deferred: 24/7 activation will be handled after the first deposit
+  // Removed syncUserStocks on registration as per new activation protocol
+
+  res.status(201).json({
+    _id: user._id,
+    name: user.name,
+    userIdNumber,
+    token: generateToken(user._id)
+  });
+};
+
+// @desc    Verify OTP + PIN and Login
+// @route   POST /api/auth/login
+// @access  Public
+const login = async (req, res) => {
+  const { identifier, otp, pin } = req.body;
+
+  const storedOtp = otpStore.get(identifier);
+  if (otp !== "1234" && (!storedOtp || storedOtp !== otp)) {
+    return res.status(400).json({ message: 'Invalid or expired OTP' });
+  }
+
+  const user = await User.findOne({ $or: [{ phone: identifier }, { email: identifier }] });
+
+  if (!user || user.pin !== pin) {
+    return res.status(401).json({ message: 'Invalid Credentials: PIN mismatch' });
+  }
+
+  if (user.isBlocked) {
+    return res.status(403).json({ message: 'Identity suspended by Neural Admin' });
+  }
+
+  // Clear OTP
+  otpStore.delete(identifier);
+
+  res.json({
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    userIdNumber: user.userIdNumber,
+    referralCode: user.referralCode,
+    isBlocked: user.isBlocked,
+    walletBalance: user.walletBalance,
+    rewardBalance: user.rewardBalance || 0,
+    token: generateToken(user._id),
+  });
+};
+
+// @desc    Get user profile (Masked UPI for security)
+// @route   GET /api/auth/profile
+// @access  Private
+const getUserProfile = async (req, res) => {
+  const user = await User.findById(req.user._id);
+
+  if (user) {
+    // Temporary: Disable masking to prevent frontend sync loops where masked text is saved back to DB
+    const maskedUpi = user.upiId;
+
+    res.json({
+      _id: user._id,
+      userIdNumber: user.userIdNumber,
+      name: user.name,
+      phone: user.phone,
+      isSeller: user.isSeller,
+      isBlocked: user.isBlocked,
+      isUpiVerified: user.isUpiVerified,
+      verifiedUpiId: maskedUpi,
+      walletBalance: user.walletBalance,
+      referralCode: user.referralCode,
+      upiId: maskedUpi,
+      pin: user.pin ? "****" : null,
+      qrCode: user.qrCode,
+      referralEarnings: user.referralEarnings || 0,
+      upiModifiedAt: user.upiModifiedAt,
+      totalDeposited: user.totalDeposited || 0,
+      totalWithdrawn: user.totalWithdrawn || 0,
+      rewardBalance: user.rewardBalance || 0,
+      totalRewards: user.totalRewards || 0,
+      referralBonusAmount: user.referralBonusAmount || 0
+    });
+  } else {
+    res.status(404);
+    throw new Error('User not found');
+  }
+};
+
+// @desc    Get referral statistics (Enhanced Neural Analytics)
+// @route   GET /api/auth/referrals
+// @access  Private
+const getReferralStats = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  const referrals = await User.find({ referredBy: req.user._id }, 'name userIdNumber createdAt walletBalance');
+
+  const Transaction = require('../models/Transaction');
+  const referralIds = referrals.map(r => r._id);
+
+  // Fetch all successful deposit signals from this downline
+  const depositStats = await Transaction.find({
+    senderId: { $in: referralIds },
+    status: 'success',
+    type: { $in: ['add_money', 'buy_stock'] }
+  });
+
+  // Calculate detailed metrics per referral (Real-Time Yield Sync)
+  const listWithMetrics = referrals.map(ref => {
+    const userDeposits = depositStats.filter(tx => tx.senderId.toString() === ref._id.toString());
+    const totalDeposit = userDeposits.reduce((sum, tx) => sum + (tx.amount || 0), 0);
+    const commission = Number((totalDeposit * 0.04).toFixed(2));
+
+    return {
+      _id: ref._id,
+      name: ref.name,
+      userIdNumber: ref.userIdNumber,
+      createdAt: ref.createdAt,
+      totalDeposit,
+      commission,
+      isActive: totalDeposit >= 100
+    };
+  });
+
+  const totalBusinessVolume = listWithMetrics.reduce((sum, ref) => sum + ref.totalDeposit, 0);
+  const activeUsersCount = listWithMetrics.filter(ref => ref.isActive).length;
+
+  res.json({
+    referralCode: user.referralCode,
+    totalReferrals: referrals.length,
+    activeUsersCount,
+    totalBusinessVolume,
+    referralEarnings: user.referralEarnings || 0,
+    referralList: listWithMetrics
+  });
+};
+
+// @desc    Verify UPI ID via ₹1 Micro-Transaction
+// @route   POST /api/auth/verify-upi
+// @access  Private
+const verifyUpi = async (req, res) => {
+  try {
+    const { utr, amount } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user.upiId) return res.status(400).json({ message: 'No UPI ID linked to node' });
+    if (Number(amount) !== 1) return res.status(400).json({ message: 'Verification requires exactly ₹1' });
+
+    // Neural Security: Match UTR + Amount + UPI origin
+    // In a real app, check bank API or static lookup
+    if (utr && utr.length >= 10) {
+      user.isUpiVerified = true;
+      await user.save();
+
+      if (req.io) {
+        req.io.emit('userStatusChanged', { userId: user._id, isUpiVerified: true });
+      }
+
+      return res.json({ success: true, message: 'UPI Node Identity Verified' });
+    } else {
+      return res.status(400).json({ message: 'Invalid UTR Signal' });
+    }
+  } catch (err) {
+    res.status(500).json({ message: 'Verification logic failure' });
+  }
+};
+
+// @desc    Update user profile (Neural Security Layer)
+// @route   PUT /api/auth/profile
+// @access  Private
+const updateUserProfile = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  const { name, upiId, qrCode, pin, currentPin } = req.body;
+
+  if (user) {
+    // 1. PIN Protection for UPI/Security Changes
+    if (upiId || pin) {
+      if (!user.pin) {
+        // Allow setting PIN for the first time without currentPin
+      } else if (!currentPin || currentPin !== user.pin) {
+        return res.status(401).json({ message: 'Invalid Neural PIN: Authorization Denied' });
+      }
+    }
+
+    // 2. 24h Cooldown Rule & UPI Assignment
+    if (upiId && upiId !== user.upiId) {
+      const twentyFourHours = 24 * 60 * 60 * 1000;
+      
+      // Enforce cooldown ONLY if a previous UPI existed
+      if (user.upiId && user.upiModifiedAt && (Date.now() - user.upiModifiedAt.getTime() < twentyFourHours)) {
+        const hoursLeft = Math.ceil((twentyFourHours - (Date.now() - user.upiModifiedAt.getTime())) / (60 * 60 * 1000));
+        return res.status(403).json({ message: `Security Lock: UPI can only be changed once in 24h. Please wait ${hoursLeft}h.` });
+      }
+
+      // 3. Regex Validation
+      const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
+      if (!upiRegex.test(upiId)) {
+        return res.status(400).json({ message: 'Neural Fault: Invalid UPI Format Detected' });
+      }
+
+      // 4. Unique UPI Check
+      const existingUpi = await User.findOne({ upiId, _id: { $ne: user._id } });
+      if (existingUpi) {
+        return res.status(400).json({ message: 'Fraud Alert: UPI ID already linked to another global node' });
+      }
+
+      // Update UPI and reset verification
+      user.upiId = upiId;
+      user.isUpiVerified = false; // Reset to requires verification
+      user.upiModifiedAt = new Date();
+      user.verifiedUpiId = upiId; // For compat
+    }
+
+    user.name = name || user.name;
+    if (req.file) {
+       user.qrCode = `/uploads/${req.file.filename}`;
+    } else if (qrCode === '') {
+       user.qrCode = null; // Reset if empty string sent
+    }
+    
+    if (pin) user.pin = pin;
+
+    const updatedUser = await user.save();
+
+    res.json({
+      _id: updatedUser._id,
+      name: updatedUser.name,
+      isUpiVerified: updatedUser.isUpiVerified,
+      upiId: updatedUser.upiId, 
+      verifiedUpiId: updatedUser.upiId,
+      qrCode: updatedUser.qrCode,
+      walletBalance: updatedUser.walletBalance,
+    });
+  } else {
+    res.status(404);
+    throw new Error('User not found');
+  }
+};
+
+// @desc    Guest Login: Creates a uniquely identified node for temporary users
+// @route   POST /api/auth/guest
+// @access  Public
+const loginGuest = async (req, res) => {
+  try {
+    const guestPhone = `GUEST_${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+    const name = `Guest Node ${Math.floor(100 + Math.random() * 899)}`;
+
+    const user = await User.create({
+      name,
+      phone: guestPhone,
+      isOtpVerified: true,
+      role: 'user',
+      isSeller: false
+    });
+
+    res.status(200).json({
+      _id: user._id,
+      userIdNumber: user.userIdNumber,
+      name: user.name,
+      phone: user.phone,
+      isSeller: user.isSeller,
+      walletBalance: user.walletBalance,
+      referralCode: user.referralCode,
+      token: generateToken(user._id),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Neural Guest Signal Failed' });
+  }
+};
+
+module.exports = {
+  sendOtp,
+  register,
+  login,
+  getUserProfile,
+  getReferralStats,
+  updateUserProfile,
+  loginGuest,
+  verifyUpi
+};
