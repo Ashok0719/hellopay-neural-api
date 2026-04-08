@@ -53,6 +53,16 @@
 
       await config.save();
       
+      // Global Sync: Reflect changes on all users immediately as requested
+      const updateData = {};
+      if (globalCashbackPercent !== undefined) updateData.referralPercent = globalCashbackPercent;
+      if (profitPercentage !== undefined) updateData.profitPercent = profitPercentage;
+      
+      if (Object.keys(updateData).length > 0) {
+        await User.updateMany({}, { $set: updateData });
+        console.log(`[Neural Sync] Propagated global limits to all users:`, updateData);
+      }
+
       // Neural Signal: Emit the plain object version to avoid Mongoose serialization issues in Socket.io
       const syncData = {
         stockPlans: config.stockPlans,
@@ -66,8 +76,11 @@
         withdrawalEnabled: config.withdrawalEnabled
       };
 
-      if (req.io) req.io.emit('configUpdated', syncData);
-      res.json({ message: 'Configuration updated successfully', config: syncData });
+      if (req.io) {
+        req.io.emit('configUpdated', syncData);
+        req.io.emit('userStatusChanged', { action: 'refresh' }); // Trigger frontend refresh for all users
+      }
+      res.json({ message: 'Configuration updated and propagated to all users successfully', config: syncData });
     } catch (err) {
       console.error('Neural Sync Failure:', err);
       res.status(500).json({ message: 'Update failed', error: err.message });
@@ -357,7 +370,8 @@ const reviewTransaction = async (req, res) => {
         if (user.referredBy) {
           const referrer = await User.findById(user.referredBy);
           if (referrer) {
-             const comm = Number((transaction.amount * 0.04).toFixed(2));
+             const commPercent = referrer.referralPercent || config.globalCashbackPercent || 4;
+             const comm = Number((transaction.amount * commPercent / 100).toFixed(2));
              referrer.walletBalance = Number((referrer.walletBalance + comm).toFixed(2));
              referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + comm).toFixed(2));
              await referrer.save();
@@ -458,7 +472,7 @@ const adminVerifyStockTransaction = async (req, res) => {
 
       // 3. Config & Profit
       const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-      const profitPercentage = config?.profitPercentage || 4;
+      const profitPercentage = buyer.profitPercent || config?.profitPercentage || 8;
 
       // 4. SELLER: Finalize Node Liquidation (Bank Credit Simulation)
       const seller = await User.findById(sessionTransaction.sellerId);
@@ -504,7 +518,8 @@ const adminVerifyStockTransaction = async (req, res) => {
       if (buyer.referredBy) {
         const referrer = await User.findById(buyer.referredBy);
         if (referrer) {
-          const commission = Number((sessionTransaction.amount * 0.04).toFixed(2));
+          const commPercent = referrer.referralPercent || config.globalCashbackPercent || 4;
+          const commission = Number((sessionTransaction.amount * commPercent / 100).toFixed(2));
           referrer.walletBalance = Number((referrer.walletBalance + commission).toFixed(2));
           referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commission).toFixed(2));
           await referrer.save();
@@ -704,10 +719,38 @@ const getFraudDashboard = async (req, res) => {
   }
 };
 
+// @desc    Admin: Update individual user profit/referral percentages
+const updateUserPercents = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { referralPercent, profitPercent } = req.body;
+    
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ message: 'User Entity Not Found' });
+
+    if (referralPercent !== undefined) user.referralPercent = referralPercent;
+    if (profitPercent !== undefined) user.profitPercent = profitPercent;
+
+    await user.save();
+    
+    if (req.io) {
+      req.io.emit('userStatusChanged', { 
+        userId: user._id, 
+        referralPercent: user.referralPercent,
+        profitPercent: user.profitPercent
+      });
+    }
+
+    res.json({ success: true, message: 'Neural Percentages Calibrated', user });
+  } catch (err) {
+    res.status(500).json({ message: 'Calibration Failure' });
+  }
+};
+
 module.exports = { 
   getConfig, updateConfig, getAnalytics, getAllUsers, toggleUserBlock, 
   updateUserBalance, deleteUser, getAllTransactions, reviewTransaction, 
   initializeStock, adminVerifyStockTransaction, getAllStocks, toggleStockPin,
   deleteStock, deleteTransaction, resplitUserWallet, overrideWalletSplits,
-  getFraudDashboard
+  getFraudDashboard, updateUserPercents
 };

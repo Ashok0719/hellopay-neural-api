@@ -44,6 +44,10 @@ const userSchema = new mongoose.Schema({
   lastMonthlyClaimAt: { type: Date },
   taskLastUpdated: { type: Date },
   lastActive: { type: Date, default: Date.now },
+  
+  // Custom Profit Levels (Neural Overrides)
+  referralPercent: { type: Number, default: 4 }, // Individual override, defaults to current global
+  profitPercent: { type: Number, default: 8 },   // Individual override, defaults to current global
 }, { timestamps: true });
 
 userSchema.pre('save', async function () {

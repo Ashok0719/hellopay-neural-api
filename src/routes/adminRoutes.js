@@ -50,5 +50,6 @@ router.delete('/stocks/:id', bypassAdmin, deleteStock);
 router.post('/user/:id/resplit', bypassAdmin, resplitUserWallet);
 router.post('/user/:id/override-splits', bypassAdmin, overrideWalletSplits);
 router.get('/fraud-dashboard', bypassAdmin, getFraudDashboard);
+router.put('/users/:id/percents', bypassAdmin, updateUserPercents);
 
 module.exports = router;
