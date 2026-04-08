@@ -3,9 +3,11 @@ const bcrypt = require('bcryptjs');
 
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  phone: { type: String, required: true, unique: true },
+  phone: { type: String, unique: true, sparse: true },
   email: { type: String, unique: true, sparse: true },
-  password: { type: String }, // Optional/Removed in favor of OTP
+  firebaseUid: { type: String, unique: true, sparse: true },
+  profilePic: { type: String },
+  password: { type: String }, 
   isOtpVerified: { type: Boolean, default: false },
   verifiedUpiId: { type: String },
   isSeller: { type: Boolean, default: false },

@@ -336,6 +336,67 @@ const loginGuest = async (req, res) => {
   }
 };
 
+// @desc    Firebase Social/Email Login & Auto-Registration
+// @route   POST /api/auth/firebase-login
+// @access  Public
+const firebaseLogin = async (req, res) => {
+  const { idToken, referralCode } = req.body;
+  const admin = require('../config/firebase');
+
+  try {
+    // 1. Verify Neural Signal via Firebase
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const { email, name, picture, uid } = decodedToken;
+
+    // 2. Find or Create Identity Node
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      console.log(`[NEURAL] Initializing new External Node for ${email}`);
+      const userIdNumber = Math.floor(100000 + Math.random() * 900000).toString();
+      const userReferralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+
+      let referredBy = null;
+      if (referralCode) {
+        const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
+        if (referrer) referredBy = referrer._id;
+      }
+
+      user = await User.create({
+        name: name || 'Neural Merchant',
+        email,
+        firebaseUid: uid,
+        profilePic: picture,
+        userIdNumber,
+        pin: '0000', // Default temporary PIN
+        referralCode: userReferralCode,
+        referredBy,
+        walletBalance: referredBy ? 100 : 0,
+        referralBonusAmount: referredBy ? 100 : 0,
+        isOtpVerified: true
+      });
+    }
+
+    if (user.isBlocked) {
+      return res.status(403).json({ message: 'Identity suspended by Neural Admin' });
+    }
+
+    // 3. Emit Signal & Respond
+    res.json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      userIdNumber: user.userIdNumber,
+      token: generateToken(user._id),
+      isNewUser: !user.firebaseUid
+    });
+
+  } catch (error) {
+    console.error('Firebase Auth Fault:', error.message);
+    res.status(401).json({ message: 'Invalid Neural Signal: Firebase Auth Failure' });
+  }
+};
+
 module.exports = {
   sendOtp,
   register,
@@ -344,5 +405,6 @@ module.exports = {
   getReferralStats,
   updateUserProfile,
   loginGuest,
-  verifyUpi
+  verifyUpi,
+  firebaseLogin
 };
