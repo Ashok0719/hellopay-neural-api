@@ -305,36 +305,6 @@ const updateUserProfile = async (req, res) => {
   }
 };
 
-// @desc    Guest Login: Creates a uniquely identified node for temporary users
-// @route   POST /api/auth/guest
-// @access  Public
-const loginGuest = async (req, res) => {
-  try {
-    const guestPhone = `GUEST_${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
-    const name = `Guest Node ${Math.floor(100 + Math.random() * 899)}`;
-
-    const user = await User.create({
-      name,
-      phone: guestPhone,
-      isOtpVerified: true,
-      role: 'user',
-      isSeller: false
-    });
-
-    res.status(200).json({
-      _id: user._id,
-      userIdNumber: user.userIdNumber,
-      name: user.name,
-      phone: user.phone,
-      isSeller: user.isSeller,
-      walletBalance: user.walletBalance,
-      referralCode: user.referralCode,
-      token: generateToken(user._id),
-    });
-  } catch (err) {
-    res.status(500).json({ message: 'Neural Guest Signal Failed' });
-  }
-};
 
 // @desc    Firebase Social/Email Login & Auto-Registration
 // @route   POST /api/auth/firebase-login
@@ -404,7 +374,6 @@ module.exports = {
   getUserProfile,
   getReferralStats,
   updateUserProfile,
-  loginGuest,
   verifyUpi,
   firebaseLogin
 };

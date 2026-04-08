@@ -7,7 +7,6 @@ const {
   getUserProfile, 
   getReferralStats, 
   updateUserProfile, 
-  loginGuest, 
   verifyUpi,
   firebaseLogin
 } = require('../controllers/authController');
@@ -20,7 +19,6 @@ router.post('/register', register);
 router.post('/login', login);
 router.post('/firebase-login', firebaseLogin);
 router.post('/verify-otp', otpValidation, login); // Fallback for existing clients
-router.post('/guest', loginGuest);
 router.post('/verify-upi', protect, verifyUpi);
 router.get('/profile', protect, getUserProfile);
 router.put('/profile', protect, upload.single('qrCode'), updateUserProfile);
