@@ -127,22 +127,23 @@ const deleteUser = async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ message: 'User Node Not Found' });
 
-    // Atomic Cleanup: Stocks & Transactions
-    await Stock.deleteMany({ ownerId: id });
-    await StockTransaction.deleteMany({ $or: [{ buyerId: id }, { sellerId: id }] });
-    await Transaction.deleteMany({ $or: [{ senderId: id }, { receiverId: id }] });
+    // Atomic Cleanup: Stocks & Transactions (Non-blocking fault tolerance)
+    try { await Stock.deleteMany({ ownerId: id }); } catch (e) {}
+    try { await StockTransaction.deleteMany({ $or: [{ buyerId: id }, { sellerId: id }] }); } catch (e) {}
+    try { await Transaction.deleteMany({ $or: [{ senderId: id }, { receiverId: id }] }); } catch (e) {}
     
     await user.deleteOne();
 
     if (req.io) {
       req.io.emit('userDeleted', { userId: id });
+      req.io.emit('userStatusChanged', { action: 'delete', userId: id });
       req.io.emit('stock_update', { action: 'refresh' });
     }
 
     res.json({ success: true, message: 'Entity Purged from Registry' });
   } catch (err) {
     console.error('Termination Failure:', err);
-    res.status(500).json({ message: 'Termination sequence failed' });
+    res.status(500).json({ message: 'Termination sequence failed. Check Node connectivity.' });
   }
 };
 
@@ -526,6 +527,8 @@ const adminVerifyStockTransaction = async (req, res) => {
     } else {
       transaction.status = 'FAILED';
       await transaction.save();
+
+      if (req.io) req.io.emit('userStatusChanged', { action: 'transaction_failed', transactionId: id });
 
       const stock = await Stock.findById(transaction.stockId);
       stock.status = 'AVAILABLE';
