@@ -1,6 +1,8 @@
 const StockTransaction = require('../models/StockTransaction');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
+const Config = require('../models/Config');
+const Transaction = require('../models/Transaction');
 const { performOcr } = require('../utils/ocr');
 
 /**
@@ -150,14 +152,57 @@ async function finalizePayment(paymentId, status) {
   if (status === 'success') {
     // 1. Update User Wallet
     const user = await User.findById(payment.userId);
-    user.walletBalance += payment.amount;
+    if (!user) return payment;
+
+    const depositAmount = payment.amount;
+    user.walletBalance = Number((user.walletBalance + depositAmount).toFixed(2));
+    user.totalDeposited = (user.totalDeposited || 0) + depositAmount;
+    
+    // 2. Create Transaction Record (Internal Ledger)
+    await Transaction.create({
+        senderId: user._id,
+        type: 'add_money',
+        amount: depositAmount,
+        status: 'success',
+        transactionId: payment.utr,
+        description: `Neural Deposit Verified: ${payment.verificationMethod}`
+    });
+
+    // 3. Referral Commission Integration
+    if (user.referredBy) {
+        const referrer = await User.findById(user.referredBy);
+        if (referrer) {
+            const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+            const commPercent = referrer.referralPercent || config?.referralCommissionPercent || 4;
+            const commission = Number((depositAmount * commPercent / 100).toFixed(2));
+
+            if (commission > 0) {
+                referrer.walletBalance = Number((referrer.walletBalance + commission).toFixed(2));
+                referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commission).toFixed(2));
+                await referrer.save();
+
+                // Log Referral Commission
+                await Transaction.create({
+                    receiverId: referrer._id,
+                    senderId: user._id,
+                    type: 'transfer',
+                    amount: commission,
+                    status: 'success',
+                    description: `Referral Commission from Node ${user.userIdNumber}`
+                });
+            }
+        }
+    }
+
     await user.save();
 
-    // 2. Update Stock Transaction
-    await StockTransaction.findByIdAndUpdate(payment.transactionId, { 
-        status: 'SUCCESS',
-        isProcessed: true
-    });
+    // 4. Update Stock Inventory (Splits)
+    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+    if (config) {
+        const { syncUserStocks } = require('../utils/financeLogic');
+        const Stock = require('../models/Stock');
+        await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
+    }
   }
 
   return payment;
