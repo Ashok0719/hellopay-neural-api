@@ -7,11 +7,19 @@ try {
     let serviceAccount;
     const serviceAccountContent = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
     
-    if (serviceAccountContent && serviceAccountContent.trim() !== "" && serviceAccountContent !== '""') {
+    if (serviceAccountContent && serviceAccountContent.trim() !== "") {
       try {
-        serviceAccount = JSON.parse(serviceAccountContent);
+        // Sanitize: Some environments escape newlines or add extra quotes
+        let sanitizedContent = serviceAccountContent.trim();
+        if (sanitizedContent.startsWith('"') && sanitizedContent.endsWith('"')) {
+          sanitizedContent = sanitizedContent.substring(1, sanitizedContent.length - 1);
+        }
+        // Handle escaped newlines that might be literal "\n" strings
+        sanitizedContent = sanitizedContent.replace(/\\n/g, '\n');
+        
+        serviceAccount = JSON.parse(sanitizedContent);
       } catch (e) {
-        console.warn('[NEURAL WARNING] Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON env var. Falling back to file.');
+        console.warn('[NEURAL WARNING] Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON env var. Technical Detail:', e.message);
       }
     }
 
