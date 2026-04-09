@@ -23,6 +23,7 @@ router.post('/firebase-login', firebaseLogin);
 router.post('/verify-otp', otpValidation, login); 
 router.post('/verify-upi', protect, verifyUpi);
 router.get('/profile', protect, getUserProfile);
+router.get('/me', protect, getUserProfile);
 router.put('/profile', protect, upload.single('qrCode'), updateUserProfile);
 router.get('/referrals', protect, getReferralStats);
 router.post('/change-pin', protect, changePin);
