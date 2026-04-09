@@ -282,7 +282,7 @@ const updateUserProfile = async (req, res) => {
     if (upiId || pin) {
       if (!user.pin) {
         // Allow setting PIN for the first time without currentPin
-      } else if (!currentPin || currentPin !== user.pin) {
+      } else if (!currentPin || !(await user.matchPin(currentPin))) {
         return res.status(401).json({ message: 'Invalid Neural PIN: Authorization Denied' });
       }
     }
@@ -425,7 +425,7 @@ const changePin = async (req, res) => {
     if (!user) return res.status(404).json({ message: 'Identity Node Not Found' });
 
     // Verify current PIN
-    if (user.pin !== oldPin) {
+    if (!(await user.matchPin(oldPin))) {
       return res.status(401).json({ success: false, message: 'Invalid Current PIN' });
     }
 
@@ -497,8 +497,8 @@ const saveUpi = async (req, res) => {
     const user = await User.findById(req.user._id);
 
     if (!user.pin) {
-      // First time setting PIN
-    } else if (!pin || pin !== user.pin) {
+      // First time setting PIN, allowed to proceed
+    } else if (!pin || !(await user.matchPin(pin))) {
       return res.status(401).json({ success: false, message: 'Invalid Security PIN' });
     }
 

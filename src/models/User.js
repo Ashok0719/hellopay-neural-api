@@ -27,7 +27,7 @@ const userSchema = new mongoose.Schema({
   upiId: { type: String, unique: true, sparse: true }, // Ensured one UPI per global node
   isUpiVerified: { type: Boolean, default: false },
   upiModifiedAt: { type: Date },
-  pin: { type: String, minlength: 4, maxlength: 4 },
+  pin: { type: String, minlength: 4 },
   qrCode: { type: String },
   fraudScore: { type: Number, default: 0 },
   lastIp: { type: String },

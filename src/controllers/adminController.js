@@ -248,11 +248,16 @@ const updateUserBalance = async (req, res) => {
       }
       
       // Neural Task Yield sync
-      await updateTaskProgress(user, delta);
+      try {
+        await updateTaskProgress(user, delta);
+      } catch (e) {
+        console.warn('[Audit Warning] Task progress sync failed.');
+      }
     } else if (delta < 0) {
       user.totalWithdrawn = (user.totalWithdrawn || 0) + Math.abs(delta);
     }
 
+    // Single save for atomicity
     await user.save();
     console.log(`[Neural Sync] Node ${id} balance updated: ${oldBalance} -> ${user.walletBalance}`);
 
@@ -470,7 +475,10 @@ const adminVerifyStockTransaction = async (req, res) => {
       );
       if (!stock) return res.status(400).json({ message: 'Stock already sold' });
 
-      // 3. Config & Profit
+      // 3. BUYER: Get record first for percentages
+      const buyer = await User.findById(transaction.buyerId);
+      if (!buyer) return res.status(404).json({ message: 'Buyer node not found' });
+
       const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
       const profitPercentage = buyer.profitPercent || config?.profitPercentage || 8;
 
@@ -502,8 +510,7 @@ const adminVerifyStockTransaction = async (req, res) => {
         }
       }
 
-      // 5. BUYER: credit amount + profit, rebuild splits
-      const buyer       = await User.findById(sessionTransaction.buyerId);
+      // 5. Apply credit amount + profit, rebuild splits
       const profit      = Number((sessionTransaction.amount * profitPercentage / 100).toFixed(2));
       const walletIncrease = Number((sessionTransaction.amount + profit).toFixed(2));
       buyer.walletBalance  = Number((buyer.walletBalance + walletIncrease).toFixed(2));
