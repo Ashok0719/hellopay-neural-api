@@ -424,8 +424,15 @@ const firebaseLogin = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Firebase Auth Fault:', error.message);
-    res.status(401).json({ message: 'Invalid Neural Signal: Firebase Auth Failure' });
+    console.error('[NEURAL AUTH FAULT] Detailed Error:', {
+      message: error.message,
+      code: error.code,
+      stack: error.stack?.split('\n')[1] // Just the first line of stack for localizing
+    });
+    res.status(401).json({ 
+      message: 'Invalid Neural Signal: Firebase Auth Failure',
+      technicalDetail: error.message 
+    });
   }
 };
 
