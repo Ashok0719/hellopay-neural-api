@@ -211,10 +211,13 @@ const getReferralStats = async (req, res) => {
   });
 
   // Calculate detailed metrics per referral (Real-Time Yield Sync)
+  const config = await Config.findOne();
+  const commRate = config?.referralCommissionPercent || 4;
+
   const listWithMetrics = referrals.map(ref => {
     const userDeposits = depositStats.filter(tx => tx.senderId.toString() === ref._id.toString());
     const totalDeposit = userDeposits.reduce((sum, tx) => sum + (tx.amount || 0), 0);
-    const commission = Number((totalDeposit * 0.04).toFixed(2));
+    const commission = Number((totalDeposit * commRate / 100).toFixed(2));
 
     return {
       _id: ref._id,
@@ -385,8 +388,8 @@ const firebaseLogin = async (req, res) => {
         pin: '0000', // Default temporary PIN
         referralCode: userReferralCode,
         referredBy,
-        walletBalance: referredBy ? 100 : 0,
-        referralBonusAmount: referredBy ? 100 : 0,
+        walletBalance: referredBy ? (config?.referralBonus || 100) : 0,
+        referralBonusAmount: referredBy ? (config?.referralBonus || 100) : 0,
         isOtpVerified: true
       });
     }

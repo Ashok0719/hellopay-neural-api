@@ -46,8 +46,9 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
     if (!user) throw new Error('Neural Node Not Registered');
 
     // Expected tradable amount (must be multiples of ₹100)
-    // Neural activation rule: Referral bonus locks until first deposit >= 100
-    const lockedBonus = user.totalDeposited < 100 ? (user.referralBonusAmount || 0) : 0;
+    // Neural activation rule: Referral bonus locks until first deposit >= minDeposit
+    const minDeposit = config.minDeposit || 100;
+    const lockedBonus = user.totalDeposited < minDeposit ? (user.referralBonusAmount || 0) : 0;
     const tradableBalance = Math.max(0, user.walletBalance - lockedBonus);
     
     const targetAmount = Math.floor(tradableBalance / 100) * 100;
