@@ -407,25 +407,39 @@ const saveUpi = async (req, res) => {
     
     upiId = upiId.toLowerCase().trim();
 
-    // 1. Regex Validation
-    const upiRegex = /^(?!.*\.\.)(?!.*__)(?!.*\.-)(?!.*-\.)[a-z0-9]+([._-]?[a-z0-9]+)*@[a-z]{2,}$/;
+    // 1. Regex Validation (Relaxed for Real-World Compatibility)
+    const upiRegex = /^[a-z0-9._-]{3,}@[a-z]{2,}$/;
     if (!upiRegex.test(upiId)) {
-      return res.status(400).json({ success: false, message: 'Invalid UPI format format' });
+      return res.status(400).json({ success: false, message: 'Invalid Neural ID Format' });
     }
 
-    // 2. Strict Rules: Length & Numbers
+    // 2. Rules: Length & Type Check
     const [username, handle] = upiId.split('@');
-    if (username.length < 5) {
-      return res.status(400).json({ success: false, message: 'Username must be at least 5 characters' });
-    }
-    if (!/\d/.test(username)) {
-      return res.status(400).json({ success: false, message: 'UPI must contain at least one number (Security Rule)' });
+    
+    // Numeric-only usernames (e.g., Paytm)
+    if (/^\d+$/.test(username)) {
+      if (username.length < 8 || username.length > 15) {
+        return res.status(400).json({ success: false, message: 'Numeric Identity must be 8-15 digits' });
+      }
+    } else {
+      // Mixed usernames
+      if (username.length < 3) {
+        return res.status(400).json({ success: false, message: 'Identity Node too short (min 3 chars)' });
+      }
     }
 
-    // 3. Allowed Handles
-    const validHandles = ['okaxis', 'oksbi', 'okhdfcbank', 'okicici', 'ybl', 'ibl', 'axl', 'apl', 'paytm', 'upi'];
+    // Still block repeated symbols
+    if (username.includes('..') || username.includes('__') || username.includes('--')) {
+      return res.status(400).json({ success: false, message: 'Sequential symbols are blocked for security' });
+    }
+
+    // 3. Expanded Allowed Handles
+    const validHandles = [
+      'okaxis', 'oksbi', 'okhdfcbank', 'okicici', 'ybl', 'ibl', 'axl', 'apl', 'paytm', 'upi',
+      'ptaxis', 'ptsbi', 'pthdfc'
+    ];
     if (!validHandles.includes(handle)) {
-      return res.status(400).json({ success: false, message: `Invalid handler @${handle}. Allowed: ${validHandles.join(', ')}` });
+      return res.status(400).json({ success: false, message: `Invalid Handler @${handle}` });
     }
 
     const { pin } = req.body;
