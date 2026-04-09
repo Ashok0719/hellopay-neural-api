@@ -25,5 +25,6 @@ router.get('/profile', protect, getUserProfile);
 router.put('/profile', protect, upload.single('qrCode'), updateUserProfile);
 router.get('/referrals', protect, getReferralStats);
 router.post('/change-pin', protect, changePin);
+router.post('/complete-profile', protect, completeProfile);
 
 module.exports = router;
