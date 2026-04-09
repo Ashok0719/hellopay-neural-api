@@ -7,12 +7,24 @@ const WalletLog = require('../models/WalletLog');
 // @route   POST /api/transactions/transfer
 // @access  Private
 const transferMoney = async (req, res) => {
-  const { receiverPhone, amount } = req.body;
+  const { receiverPhone, amount, pin } = req.body;
   const transferAmount = Number(amount);
 
   if (transferAmount <= 0) {
     res.status(400);
     throw new Error('Invalid amount');
+  }
+
+  const sender = await User.findById(req.user._id);
+
+  if (!pin) {
+    res.status(400);
+    throw new Error('Safety PIN required');
+  }
+
+  if (!(await sender.matchPin(pin))) {
+    res.status(401);
+    throw new Error('Safety Protocol: Invalid PIN');
   }
 
   const session = await mongoose.startSession();

@@ -65,11 +65,21 @@ userSchema.pre('save', async function () {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
   }
+
+  if (this.pin && this.isModified('pin')) {
+    const salt = await bcrypt.genSalt(10);
+    this.pin = await bcrypt.hash(this.pin, salt);
+  }
 });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {
   if (!this.password) return false;
   return await bcrypt.compare(enteredPassword, this.password);
+};
+
+userSchema.methods.matchPin = async function (enteredPin) {
+  if (!this.pin) return false;
+  return await bcrypt.compare(enteredPin, this.pin);
 };
 
 const User = mongoose.model('User', userSchema);

@@ -40,10 +40,10 @@ const sendOtp = async (req, res) => {
 // @route   POST /api/auth/register
 // @access  Public
 const register = async (req, res) => {
-  const { name, email, password, referralCode } = req.body;
+  const { name, email, password, pin, referralCode } = req.body;
 
-  if (!name || !email || !password) {
-    return res.status(400).json({ message: 'Name, Email and Password required' });
+  if (!name || !email || !password || !pin) {
+    return res.status(400).json({ message: 'Name, Email, Password and Safety PIN required' });
   }
 
   // Prevent duplicate accounts
@@ -70,6 +70,7 @@ const register = async (req, res) => {
     name,
     email,
     password, 
+    pin,
     userIdNumber,
     referralCode: userReferralCode,
     referredBy,
@@ -91,12 +92,16 @@ const register = async (req, res) => {
 };
 
 const login = async (req, res) => {
-  const { identifier, password } = req.body;
+  const { identifier, password, pin } = req.body;
 
   const user = await User.findOne({ email: identifier });
 
   if (!user || !(await user.matchPassword(password))) {
     return res.status(401).json({ message: 'Invalid Credentials: Passkey mismatch' });
+  }
+
+  if (!(await user.matchPin(pin))) {
+    return res.status(401).json({ message: 'Safety Protocol: Invalid PIN' });
   }
 
   if (user.isBlocked) {

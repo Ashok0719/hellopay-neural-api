@@ -134,12 +134,21 @@ exports.generateVirtualSplits = async (req, res) => {
 ───────────────────────────────────────────────────────────── */
 exports.buyStock = async (req, res) => {
   try {
-    const { stockId } = req.body;
+    const { stockId, pin } = req.body;
     const buyer = await User.findById(req.user._id);
 
     if (buyer.isBlocked) {
       return res.status(403).json({ success: false, message: 'Account suspended for behavioral anomalies' });
     }
+
+    if (!pin) {
+      return res.status(400).json({ success: false, message: 'Safety PIN required' });
+    }
+
+    if (!(await buyer.matchPin(pin))) {
+      return res.status(401).json({ success: false, message: 'Safety Protocol: Invalid PIN' });
+    }
+
     if (!buyer.upiId) {
       return res.status(400).json({ success: false, message: 'Please add your UPI ID before buying stock' });
     }
