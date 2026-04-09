@@ -20,29 +20,46 @@ class FirebaseQuery {
   async then(resolve, reject) {
     try {
       let result = await this.promise;
-      if (!result) return resolve(result);
+      if (!result) return resolve ? resolve(result) : result;
+
+      const isArray = Array.isArray(result);
+      const list = isArray ? result : [result];
+
+      // Attach .save() method to each document for Mongoose compatibility
+      for (const doc of list) {
+        if (doc && typeof doc === 'object' && doc._id) {
+          doc.save = async () => {
+            // Remove the save method itself before saving
+            const toSave = { ...doc };
+            delete toSave.save;
+            delete toSave.select;
+            delete toSave.populate;
+            return await this.model.findByIdAndUpdate(doc._id, toSave);
+          };
+          doc.select = function() { return this; };
+        }
+      }
 
       // Handle population
       for (const path of this.populatePaths) {
-        // Robust mapping for HelloPay common entities
         const pathLower = path.toLowerCase();
-        let collection = 'users'; // default
+        let collection = 'users'; 
         if (pathLower.includes('stock')) collection = 'stocks';
         if (pathLower.includes('transaction')) collection = 'transactions';
         if (pathLower.includes('listing')) collection = 'listings';
         
         const TargetModel = new FirebaseShim(collection);
         
-        const isArray = Array.isArray(result);
-        const list = isArray ? result : [result];
         for (const doc of list) {
           if (doc[path] && typeof doc[path] === 'string') {
             doc[path] = await TargetModel.findById(doc[path]);
           }
         }
       }
-      if (resolve) resolve(result);
-      return result;
+
+      const finalResult = isArray ? list : list[0];
+      if (resolve) resolve(finalResult);
+      return finalResult;
     } catch (err) {
       if (reject) reject(err);
       throw err;
@@ -85,7 +102,6 @@ class FirebaseShim {
     let queryRef = this.ref;
     const keys = Object.keys(filter);
     if (keys.length > 0) {
-      // RTDB only supports one orderBy per query.
       queryRef = queryRef.orderByChild(keys[0]).equalTo(filter[keys[0]]);
     }
     const promise = queryRef.once('value').then(snap => {
@@ -106,12 +122,22 @@ class FirebaseShim {
       updatedAt: new Date().toISOString()
     };
     await newRef.set(payload);
+    
+    // Add save method to the created object too
+    payload.save = async () => {
+      const toSave = { ...payload };
+      delete toSave.save;
+      return await this.findByIdAndUpdate(payload._id, toSave);
+    };
+    
     return payload;
   }
 
   async findByIdAndUpdate(id, update, options = {}) {
     if (!id) return null;
-    const current = await this.findById(id);
+    const currentSnap = await this.ref.child(id).once('value');
+    const current = currentSnap.val() ? { ...currentSnap.val(), _id: id } : null;
+    
     if (!current) return null;
 
     let payload = { ...update };
@@ -124,7 +150,13 @@ class FirebaseShim {
       delete payload.$push;
     }
 
-    const finalData = { ...current, ...payload, updatedAt: new Date().toISOString() };
+    // Filter out functions (like .save()) if they leaked in
+    const cleanUpdate = {};
+    Object.keys(payload).forEach(k => {
+      if (typeof payload[k] !== 'function') cleanUpdate[k] = payload[k];
+    });
+
+    const finalData = { ...current, ...cleanUpdate, updatedAt: new Date().toISOString() };
     await this.ref.child(id).set(finalData);
     return finalData;
   }
@@ -136,7 +168,6 @@ class FirebaseShim {
   }
 
   async countDocuments(filter = {}) {
-    // Standardize to avoid count issues
     const docs = await this.find(filter);
     return docs.length;
   }
