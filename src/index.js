@@ -53,6 +53,8 @@ const Config = require('./models/Config');
 })();
 
 const app = express();
+app.set('trust proxy', 1); // Trust Render's proxy for Rate Limiting
+
 const server = require('http').createServer(app);
 const io = new Server(server, {
   cors: { 
@@ -67,6 +69,7 @@ const io = new Server(server, {
 console.log('--- HelloPay Neural Base Initializing ---');
 app.use(helmet({
   contentSecurityPolicy: false,
+  crossOriginOpenerPolicy: false, // Critical Fix for Google Login Popups
 })); 
 app.use(morgan('dev'));
 
