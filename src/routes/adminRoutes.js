@@ -20,7 +20,8 @@ const {
   deleteTransaction,
   resplitUserWallet,
   overrideWalletSplits,
-  getFraudDashboard
+  getFraudDashboard,
+  updateUserPercents
 } = require('../controllers/adminController');
 
 // Development bypass for admin dashboard since it lacks auth token logic
