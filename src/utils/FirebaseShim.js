@@ -1,5 +1,4 @@
 const admin = require('../config/firebase');
-const db = admin.database();
 
 class FirebaseQuery {
   constructor(model, promise) {
@@ -25,11 +24,9 @@ class FirebaseQuery {
       const isArray = Array.isArray(result);
       const list = isArray ? result : [result];
 
-      // Attach .save() method to each document for Mongoose compatibility
       for (const doc of list) {
         if (doc && typeof doc === 'object' && doc._id) {
           doc.save = async () => {
-            // Remove the save method itself before saving
             const toSave = { ...doc };
             delete toSave.save;
             delete toSave.select;
@@ -40,7 +37,6 @@ class FirebaseQuery {
         }
       }
 
-      // Handle population
       for (const path of this.populatePaths) {
         const pathLower = path.toLowerCase();
         let collection = 'users'; 
@@ -49,7 +45,6 @@ class FirebaseQuery {
         if (pathLower.includes('listing')) collection = 'listings';
         
         const TargetModel = new FirebaseShim(collection);
-        
         for (const doc of list) {
           if (doc[path] && typeof doc[path] === 'string') {
             doc[path] = await TargetModel.findById(doc[path]);
@@ -70,7 +65,19 @@ class FirebaseQuery {
 class FirebaseShim {
   constructor(collection) {
     this.collection = collection;
-    this.ref = db.ref(collection);
+  }
+
+  get db() {
+    try {
+      return admin.database();
+    } catch (err) {
+      console.error('[NEURAL SHIM ERROR] Database access failed. Ensure Firebase is initialized.', err.message);
+      throw err;
+    }
+  }
+
+  get ref() {
+    return this.db.ref(this.collection);
   }
 
   findOne(filter = {}) {
@@ -122,14 +129,11 @@ class FirebaseShim {
       updatedAt: new Date().toISOString()
     };
     await newRef.set(payload);
-    
-    // Add save method to the created object too
     payload.save = async () => {
       const toSave = { ...payload };
       delete toSave.save;
       return await this.findByIdAndUpdate(payload._id, toSave);
     };
-    
     return payload;
   }
 
@@ -137,7 +141,6 @@ class FirebaseShim {
     if (!id) return null;
     const currentSnap = await this.ref.child(id).once('value');
     const current = currentSnap.val() ? { ...currentSnap.val(), _id: id } : null;
-    
     if (!current) return null;
 
     let payload = { ...update };
@@ -150,11 +153,8 @@ class FirebaseShim {
       delete payload.$push;
     }
 
-    // Filter out functions (like .save()) if they leaked in
     const cleanUpdate = {};
-    Object.keys(payload).forEach(k => {
-      if (typeof payload[k] !== 'function') cleanUpdate[k] = payload[k];
-    });
+    Object.keys(payload).forEach(k => { if (typeof payload[k] !== 'function') cleanUpdate[k] = payload[k]; });
 
     const finalData = { ...current, ...cleanUpdate, updatedAt: new Date().toISOString() };
     await this.ref.child(id).set(finalData);
