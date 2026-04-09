@@ -396,6 +396,60 @@ const changePin = async (req, res) => {
   }
 };
 
+/**
+ * FEATURE 7: STRICT UPI SAVE LOGIC
+ */
+const saveUpi = async (req, res) => {
+  try {
+    const { upiId } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!upiId) return res.status(400).json({ success: false, message: 'UPI ID required' });
+
+    // 1. Regex Validation
+    const upiRegex = /^(?!.*\.\.)(?!.*__)(?!.*\.-)(?!.*-\.)[a-z0-9]+([._-]?[a-z0-9]+)*@[a-z]{2,}$/;
+    if (!upiRegex.test(upiId)) {
+      return res.status(400).json({ success: false, message: 'Invalid UPI format format' });
+    }
+
+    // 2. Strict Rules: Length & Numbers
+    const [username, handle] = upiId.split('@');
+    if (username.length < 5) {
+      return res.status(400).json({ success: false, message: 'Username must be at least 5 characters' });
+    }
+    if (!/\d/.test(username)) {
+      return res.status(400).json({ success: false, message: 'UPI must contain at least one number (Security Rule)' });
+    }
+
+    // 3. Allowed Handles
+    const validHandles = ['okaxis', 'oksbi', 'okhdfcbank', 'okicici', 'ybl', 'ibl', 'axl', 'apl', 'paytm', 'upi'];
+    if (!validHandles.includes(handle)) {
+      return res.status(400).json({ success: false, message: `Invalid handler @${handle}. Allowed: ${validHandles.join(', ')}` });
+    }
+
+    // 4. Duplicate Check
+    const existing = await User.findOne({ upiId, _id: { $ne: user._id } });
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'This UPI is already linked to another identity node' });
+    }
+
+    // 5. Save Verified Status
+    user.upiId = upiId;
+    user.verifiedUpiId = upiId;
+    user.isUpiVerified = true; // Confirmed via intent flow on frontend
+    user.upiModifiedAt = new Date();
+    await user.save();
+
+    res.json({ 
+      success: true, 
+      message: 'UPI Node Identity Verified & Saved',
+      upiId: user.upiId 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Neural Registry Failure' });
+  }
+};
+
 module.exports = {
   sendOtp,
   register,
@@ -405,5 +459,6 @@ module.exports = {
   updateUserProfile,
   verifyUpi,
   firebaseLogin,
-  changePin
+  changePin,
+  saveUpi
 };
