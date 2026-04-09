@@ -270,6 +270,13 @@ const updateUserProfile = async (req, res) => {
 
     // 2. 24h Cooldown Rule & UPI Assignment
     if (upiId && upiId !== user.upiId) {
+      let finalUpi = upiId.toLowerCase().trim();
+      
+      // FEATURE: PHONE NUMBER AUTO-CONVERT
+      if (/^\d{10}$/.test(finalUpi)) {
+        finalUpi = `${finalUpi}@upi`;
+      }
+
       const twentyFourHours = 24 * 60 * 60 * 1000;
       
       // Enforce cooldown ONLY if a previous UPI existed
@@ -280,21 +287,21 @@ const updateUserProfile = async (req, res) => {
 
       // 3. Regex Validation
       const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-      if (!upiRegex.test(upiId)) {
+      if (!upiRegex.test(finalUpi)) {
         return res.status(400).json({ message: 'Neural Fault: Invalid UPI Format Detected' });
       }
 
       // 4. Unique UPI Check
-      const existingUpi = await User.findOne({ upiId, _id: { $ne: user._id } });
+      const existingUpi = await User.findOne({ upiId: finalUpi, _id: { $ne: user._id } });
       if (existingUpi) {
         return res.status(400).json({ message: 'Fraud Alert: UPI ID already linked to another global node' });
       }
 
       // Update UPI and reset verification
-      user.upiId = upiId;
+      user.upiId = finalUpi;
       user.isUpiVerified = false; // Reset to requires verification
       user.upiModifiedAt = new Date();
-      user.verifiedUpiId = upiId; // For compat
+      user.verifiedUpiId = finalUpi; // For compat
     }
 
     user.name = name || user.name;
@@ -426,6 +433,11 @@ const saveUpi = async (req, res) => {
     if (!upiId) return res.status(400).json({ success: false, message: 'UPI ID required' });
     
     upiId = upiId.toLowerCase().trim();
+    
+    // FEATURE: PHONE NUMBER AUTO-CONVERT (BACKEND)
+    if (/^\d{10}$/.test(upiId)) {
+      upiId = `${upiId}@upi`;
+    }
 
     // 1. Regex Validation (Relaxed for Real-World Compatibility)
     const upiRegex = /^[a-z0-9._-]{3,}@[a-z]{2,}$/;
