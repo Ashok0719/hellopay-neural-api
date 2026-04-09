@@ -33,10 +33,10 @@ const auditUserBehavior = async (userId, action, scoreDelta, req, details = '') 
     user.lastIp = currentIp;
     user.lastActive = now;
 
-    // Logic: Auto-block if score > 75
+    // Logic: Auto-block DISABLED per USER request. Only logging fraud score for Admin review.
     if (user.fraudScore > 75) {
-      user.isBlocked = true;
-      console.log(`[FRAUD] AUTO-BLOCK Triggered for User ${userId}. Score: ${user.fraudScore}`);
+      // user.isBlocked = true; // Auto-suspend Disabled
+      console.log(`[FRAUD] High Fraud Score Detected for User ${userId}. Score: ${user.fraudScore}`);
     }
 
     await user.save();
