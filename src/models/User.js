@@ -31,6 +31,7 @@ const userSchema = new mongoose.Schema({
   qrCode: { type: String },
   fraudScore: { type: Number, default: 0 },
   lastIp: { type: String },
+  isSetupComplete: { type: Boolean, default: false },
   
   // Task Registry Telemetry
   dailyDepositAmount: { type: Number, default: 0 },

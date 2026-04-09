@@ -66,7 +66,8 @@ const register = async (req, res) => {
     referredBy,
     walletBalance: referredBy ? 100 : 0, // ₹100 Welcome Bonus if referred
     referralBonusAmount: referredBy ? 100 : 0, // Locked until first deposit >= 100
-    isOtpVerified: true
+    isOtpVerified: true,
+    isSetupComplete: true
   });
 
   // Neural Sync Deferred: 24/7 activation will be handled after the first deposit
@@ -358,7 +359,7 @@ const firebaseLogin = async (req, res) => {
       email: user.email,
       userIdNumber: user.userIdNumber,
       token: generateToken(user._id),
-      needsSetup: user.name === 'Neural Merchant' || user.pin === '0000'
+      needsSetup: !user.isSetupComplete
     });
 
   } catch (error) {
@@ -461,6 +462,7 @@ const completeProfile = async (req, res) => {
 
     user.name = name || user.name;
     user.pin = pin || user.pin;
+    user.isSetupComplete = true;
     await user.save();
 
     res.json({
