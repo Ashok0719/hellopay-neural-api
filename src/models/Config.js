@@ -13,6 +13,7 @@ const configSchema = new mongoose.Schema({
     }
   ],
   globalCashbackPercent: { type: Number, default: 4 },
+  referralCommissionPercent: { type: Number, default: 4 },
   profitPercentage: { type: Number, default: 4 },
   adminExtraEnabled: { type: Boolean, default: true },
   adminProfitEnabled: { type: Boolean, default: true },

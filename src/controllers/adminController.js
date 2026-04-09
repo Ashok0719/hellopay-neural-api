@@ -33,7 +33,7 @@
 
   // @desc    Update system config
   const updateConfig = async (req, res) => {
-    const { stockPlans, globalCashbackPercent, profitPercentage, adminExtraEnabled, adminProfitEnabled, depositEnabled, minDeposit, maxDeposit, withdrawalEnabled } = req.body;
+    const { stockPlans, globalCashbackPercent, referralCommissionPercent, profitPercentage, adminExtraEnabled, adminProfitEnabled, depositEnabled, minDeposit, maxDeposit, withdrawalEnabled } = req.body;
 
     try {
       let config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
@@ -43,6 +43,7 @@
 
       if (stockPlans) config.stockPlans = stockPlans;
       if (globalCashbackPercent !== undefined) config.globalCashbackPercent = globalCashbackPercent;
+      if (referralCommissionPercent !== undefined) config.referralCommissionPercent = referralCommissionPercent;
       if (profitPercentage !== undefined) config.profitPercentage = profitPercentage;
       if (adminExtraEnabled !== undefined) config.adminExtraEnabled = adminExtraEnabled;
       if (adminProfitEnabled !== undefined) config.adminProfitEnabled = adminProfitEnabled;
@@ -67,6 +68,7 @@
       const syncData = {
         stockPlans: config.stockPlans,
         globalCashbackPercent: config.globalCashbackPercent,
+        referralCommissionPercent: config.referralCommissionPercent,
         profitPercentage: config.profitPercentage,
         adminExtraEnabled: config.adminExtraEnabled,
         adminProfitEnabled: config.adminProfitEnabled,
@@ -375,7 +377,7 @@ const reviewTransaction = async (req, res) => {
         if (user.referredBy) {
           const referrer = await User.findById(user.referredBy);
           if (referrer) {
-             const commPercent = referrer.referralPercent || config.globalCashbackPercent || 4;
+             const commPercent = referrer.referralPercent || config.referralCommissionPercent || config.globalCashbackPercent || 4;
              const comm = Number((transaction.amount * commPercent / 100).toFixed(2));
              referrer.walletBalance = Number((referrer.walletBalance + comm).toFixed(2));
              referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + comm).toFixed(2));
@@ -525,7 +527,7 @@ const adminVerifyStockTransaction = async (req, res) => {
       if (buyer.referredBy) {
         const referrer = await User.findById(buyer.referredBy);
         if (referrer) {
-          const commPercent = referrer.referralPercent || config.globalCashbackPercent || 4;
+          const commPercent = referrer.referralPercent || config.referralCommissionPercent || config.globalCashbackPercent || 4;
           const commission = Number((sessionTransaction.amount * commPercent / 100).toFixed(2));
           referrer.walletBalance = Number((referrer.walletBalance + commission).toFixed(2));
           referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commission).toFixed(2));
