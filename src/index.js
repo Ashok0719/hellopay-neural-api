@@ -65,12 +65,17 @@ const io = new Server(server, {
   }
 });
 
-// HelloPay Neural Core Init
-console.log('--- HelloPay Neural Base Initializing ---');
 app.use(helmet({
   contentSecurityPolicy: false,
-  crossOriginOpenerPolicy: false, // Critical Fix for Google Login Popups
+  crossOriginOpenerPolicy: false, 
 })); 
+
+// Force Unsafe-None for Google Popups
+app.use((req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
+  next();
+});
+
 app.use(morgan('dev'));
 
 const allowedOrigins = process.env.NODE_ENV === 'production'
