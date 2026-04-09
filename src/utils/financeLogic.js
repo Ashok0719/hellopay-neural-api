@@ -85,10 +85,13 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
       const validDens = denominations.filter(d => d <= remaining);
       if (validDens.length === 0) break;
       
-      // Pick a random valid denomination (bias towards slightly mixing them up)
-      // We take a random index from the valid possibilities to create mixed values (100, 200, 500, etc.)
-      const randIdx = Math.floor(Math.random() * validDens.length);
+      // Smart Neural Splitting: 
+      // Instead of purely random, we pick from the largest 3 valid denominations
+      // to keep the marketplace clean and prevent hyper-fragmentation.
+      const topCount = Math.min(3, validDens.length);
+      const randIdx = Math.floor(Math.random() * topCount);
       const chunk = validDens[randIdx];
+      
       chunks.push(chunk);
       remaining -= chunk;
     }
