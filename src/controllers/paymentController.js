@@ -72,9 +72,13 @@ exports.verifyScreenshot = async (req, res) => {
     const amountMatch = ocrResult.extractedAmount === stockTx.amount;
     const utrMatch = ocrResult.extractedUtr === utr;
     const isPaid = ocrResult.isSuccessFound;
+    
+    // Fetch receiver UPI from seller
+    const seller = await User.findById(stockTx.sellerId);
+    const receiverUpiMatch = ocrResult.extractedReceiver === seller?.upiId?.toLowerCase();
 
-    if (amountMatch && (utrMatch || isPaid)) ocrScore = 50;
-    else if (isPaid || utrMatch) ocrScore = 30;
+    if (amountMatch && (utrMatch || isPaid || receiverUpiMatch)) ocrScore = 50;
+    else if (isPaid || utrMatch || receiverUpiMatch) ocrScore = 30;
 
     // 2. TIME-BASED LOGIC (30% WEIGHT) - Feature 4 & 8
     let timeScore = 0;
