@@ -8,7 +8,8 @@ const {
   getReferralStats, 
   updateUserProfile, 
   verifyUpi,
-  firebaseLogin
+  firebaseLogin,
+  changePin
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const { otpValidation } = require('../middleware/validator');
@@ -18,10 +19,11 @@ router.post('/send-otp', sendOtp);
 router.post('/register', register);
 router.post('/login', login);
 router.post('/firebase-login', firebaseLogin);
-router.post('/verify-otp', otpValidation, login); // Fallback for existing clients
+router.post('/verify-otp', otpValidation, login); 
 router.post('/verify-upi', protect, verifyUpi);
 router.get('/profile', protect, getUserProfile);
 router.put('/profile', protect, upload.single('qrCode'), updateUserProfile);
 router.get('/referrals', protect, getReferralStats);
+router.post('/change-pin', protect, changePin);
 
 module.exports = router;

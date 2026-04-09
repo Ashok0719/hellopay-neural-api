@@ -367,6 +367,35 @@ const firebaseLogin = async (req, res) => {
   }
 };
 
+// @desc    Change user PIN with old PIN verification
+// @route   POST /api/auth/change-pin
+// @access  Private
+const changePin = async (req, res) => {
+  try {
+    const { oldPin, newPin } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user) return res.status(404).json({ message: 'Identity Node Not Found' });
+
+    // Verify current PIN
+    if (user.pin !== oldPin) {
+      return res.status(401).json({ success: false, message: 'Invalid Current PIN' });
+    }
+
+    // Validate new PIN format
+    if (!/^\d{4}$/.test(newPin)) {
+      return res.status(400).json({ success: false, message: 'New PIN must be exactly 4 digits' });
+    }
+
+    user.pin = newPin;
+    await user.save();
+
+    res.json({ success: true, message: 'Neural PIN Successfully Updated' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Encryption Protocol Failure' });
+  }
+};
+
 module.exports = {
   sendOtp,
   register,
@@ -375,5 +404,6 @@ module.exports = {
   getReferralStats,
   updateUserProfile,
   verifyUpi,
-  firebaseLogin
+  firebaseLogin,
+  changePin
 };
