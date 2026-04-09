@@ -122,8 +122,35 @@ const login = async (req, res) => {
     walletBalance: user.walletBalance,
     rewardBalance: user.rewardBalance || 0,
     isOpenSelling: user.isOpenSelling || false,
-    token: token,
+    token: token, // This token will now be saved in localStorage by the frontend
   });
+};
+
+// @desc    Reset Password via 4-digit Safety PIN
+// @route   POST /api/auth/reset-password-pin
+// @access  Public
+const resetPasswordWithPin = async (req, res) => {
+  const { email, pin, newPassword } = req.body;
+
+  if (!email || !pin || !newPassword) {
+    return res.status(400).json({ message: 'Email, PIN and New Password are required' });
+  }
+
+  const user = await User.findOne({ email });
+
+  if (!user) {
+    return res.status(404).json({ message: 'Identity Node not found' });
+  }
+
+  const isPinMatch = await user.matchPin(pin);
+  if (!isPinMatch) {
+    return res.status(401).json({ message: 'Invalid Safety PIN: Authorization Denied' });
+  }
+
+  user.password = newPassword;
+  await user.save();
+
+  res.json({ success: true, message: 'Password reset successful. Access your Node with your new passkey.' });
 };
 
 // @desc    Get user profile (Masked UPI for security)
@@ -567,5 +594,6 @@ module.exports = {
   changePin,
   saveUpi,
   completeProfile,
-  toggleSelling
+  toggleSelling,
+  resetPasswordWithPin
 };
