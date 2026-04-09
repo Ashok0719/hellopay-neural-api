@@ -57,56 +57,63 @@ exports.verifyUtr = async (req, res) => {
  */
 exports.verifyScreenshot = async (req, res) => {
   try {
-    const { transactionId, utr } = req.body;
+    const { transactionId, utr, timeSpent } = req.body;
     const file = req.file;
 
-    if (!file) return res.status(400).json({ success: false, message: 'Screenshot required' });
+    if (!file) return res.status(400).json({ success: false, message: 'Screenshot required for automatic verification' });
 
     const stockTx = await StockTransaction.findById(transactionId);
     if (!stockTx) return res.status(404).json({ success: false, message: 'Transaction not found' });
 
-    // Perform OCR
+    // 1. PERFORM OCR (50% WEIGHT)
     const ocrResult = await performOcr(file.path);
+    let ocrScore = 0;
     
-    // Find existing payment or create one
+    const amountMatch = ocrResult.extractedAmount === stockTx.amount;
+    const utrMatch = ocrResult.extractedUtr === utr;
+    const isPaid = ocrResult.isSuccessFound;
+
+    if (amountMatch && (utrMatch || isPaid)) ocrScore = 50;
+    else if (isPaid || utrMatch) ocrScore = 30;
+
+    // 2. TIME-BASED LOGIC (30% WEIGHT) - Feature 4 & 8
+    let timeScore = 0;
+    const t = Number(timeSpent) || 0;
+    if (t > 30) timeScore = 30;
+    else if (t >= 5 && t <= 25) timeScore = 20;
+    else if (t < 3) timeScore = 0;
+
+    // 3. UTR VALIDITY (20% WEIGHT) - Feature 7
+    let utrScore = 0;
+    const isUtrUnique = !(await Payment.findOne({ utr, transactionId: { $ne: transactionId } }));
+    const isUtrFormatValid = /^\d{12,22}$/.test(utr || '');
+    if (isUtrUnique && isUtrFormatValid) utrScore = 20;
+
+    // 4. FINAL CALCULATION - Feature 8
+    const totalScore = ocrScore + timeScore + utrScore;
+    let finalStatus = 'pending';
+
+    if (totalScore >= 80) finalStatus = 'success';
+    else if (totalScore >= 60) finalStatus = 'suspicious'; // Marked for REVIEW
+    else finalStatus = 'failed';
+
+    // Find or create payment record
     let payment = await Payment.findOne({ transactionId: stockTx._id });
     if (!payment) {
         payment = new Payment({
             userId: req.user._id,
             transactionId: stockTx._id,
-            amount: stockTx.amount,
-            utr: utr || ocrResult.extractedUtr
+            amount: stockTx.amount
         });
     }
 
+    payment.utr = utr || ocrResult.extractedUtr;
     payment.screenshotUrl = '/uploads/' + file.filename;
-    payment.verificationMethod = 'OCR';
-    payment.ocrData = {
-        extractedAmount: ocrResult.extractedAmount,
-        extractedUtr: ocrResult.extractedUtr,
-        matchStatus: (ocrResult.extractedUtr === utr) || (ocrResult.isSuccessFound)
-    };
-
-    /**
-     * FEATURE 4: AUTO DECISION ENGINE
-     */
-    let finalStatus = 'pending';
-    let fraudScore = 0;
-
-    const amountMatch = ocrResult.extractedAmount === stockTx.amount;
-    const utrMatch = ocrResult.extractedUtr === utr;
-
-    if (amountMatch && utrMatch && ocrResult.isSuccessFound) {
-        finalStatus = 'success';
-    } else if (ocrResult.isSuccessFound || utrMatch) {
-        finalStatus = 'success'; // Per logic: UTR valid is enough
-    } else {
-        finalStatus = 'suspicious';
-        fraudScore = 50;
-    }
-
+    payment.verificationMethod = 'OCR_AUTO';
+    payment.fraudScore = 100 - totalScore; // Confidence Score inverted for fraud tracking
     payment.status = finalStatus;
-    payment.fraudScore = fraudScore;
+    payment.ocrData = { extractedAmount: ocrResult.extractedAmount, extractedUtr: ocrResult.extractedUtr };
+    
     await payment.save();
 
     if (finalStatus === 'success') {
@@ -116,8 +123,9 @@ exports.verifyScreenshot = async (req, res) => {
     res.json({ 
         success: true, 
         status: finalStatus, 
-        ocr: ocrResult,
-        message: finalStatus === 'success' ? 'Auto-verified via OCR' : 'Marked as suspicious for review'
+        confidenceScore: totalScore,
+        message: finalStatus === 'success' ? 'Fully Verified ✅' : 
+                 finalStatus === 'suspicious' ? 'Under Review ⏳' : 'Verification Failed ❌'
     });
 
   } catch (err) {
