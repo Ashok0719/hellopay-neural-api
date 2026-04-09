@@ -120,6 +120,12 @@ const { protect } = require('./middleware/authMiddleware');
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/admin', adminRoutes);
+
+// Neural Health Route
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'UP', neural_sync: 'ACTIVE' });
+});
+
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/recharge', require('./routes/rechargeRoutes'));
 app.use('/api/listings', listingRoutes);
