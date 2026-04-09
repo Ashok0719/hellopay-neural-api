@@ -500,8 +500,9 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     }
 
     const activeBuyer = await User.findById(buyer._id);
+    const profitEnabled = config?.adminProfitEnabled !== false; // Default to true if not set
     const profitPercentage = config?.profitPercentage || 4;
-    const profit = Number(((transaction.amount * profitPercentage) / 100).toFixed(2));
+    const profit = profitEnabled ? Number(((transaction.amount * profitPercentage) / 100).toFixed(2)) : 0;
 
     activeBuyer.walletBalance = Number((activeBuyer.walletBalance + transaction.amount + profit).toFixed(2));
     activeBuyer.totalDeposited = Number(((activeBuyer.totalDeposited || 0) + transaction.amount).toFixed(2));
@@ -510,7 +511,8 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     if (activeBuyer.referredBy) {
       const referrer = await User.findById(activeBuyer.referredBy);
       if (referrer) {
-        const commissionValue = Number((transaction.amount * 0.04).toFixed(2));
+        const commPercent = referrer.referralPercent || config?.referralCommissionPercent || 4;
+        const commissionValue = Number((transaction.amount * (commPercent / 100)).toFixed(2));
         referrer.walletBalance = Number((referrer.walletBalance + commissionValue).toFixed(2));
         referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commissionValue).toFixed(2));
         await referrer.save();

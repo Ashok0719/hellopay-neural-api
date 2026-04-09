@@ -59,7 +59,7 @@ const transferMoney = async (req, res) => {
       receiverId: receiver._id,
       type: 'transfer',
       amount: transferAmount,
-      status: 'success',
+      status: 'SUCCESS',
       referenceId: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
     }], { session });
 

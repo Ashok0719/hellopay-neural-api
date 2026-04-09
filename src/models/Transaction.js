@@ -19,8 +19,8 @@ const transactionSchema = new mongoose.Schema({
   rewardUsed: { type: Number, default: 0 },
   status: {
     type: String,
-    enum: ['pending', 'success', 'failed', 'rejected'],
-    default: 'pending',
+    enum: ['PENDING', 'SUCCESS', 'FAILED', 'REJECTED'],
+    default: 'PENDING',
   },
   screenshotUrl: { type: String },
   transactionId: { type: String, unique: true, sparse: true }, // UPI Ref Number

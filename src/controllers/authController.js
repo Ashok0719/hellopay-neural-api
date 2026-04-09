@@ -66,6 +66,10 @@ const register = async (req, res) => {
     }
   }
 
+  // Fetch system config for dynamic bonus
+  const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+  const bonus = config?.referralBonus || 100;
+
   const user = await User.create({
     name,
     email,
@@ -74,8 +78,8 @@ const register = async (req, res) => {
     userIdNumber,
     referralCode: userReferralCode,
     referredBy,
-    walletBalance: referredBy ? 100 : 0, 
-    referralBonusAmount: referredBy ? 100 : 0, 
+    walletBalance: referredBy ? bonus : 0, 
+    referralBonusAmount: referredBy ? bonus : 0, 
     isOtpVerified: true,
     isSetupComplete: true
   });
@@ -211,8 +215,9 @@ const getReferralStats = async (req, res) => {
   });
 
   // Calculate detailed metrics per referral (Real-Time Yield Sync)
-  const config = await Config.findOne();
+  const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
   const commRate = config?.referralCommissionPercent || 4;
+  const minDeposit = config?.minDeposit || 100;
 
   const listWithMetrics = referrals.map(ref => {
     const userDeposits = depositStats.filter(tx => tx.senderId.toString() === ref._id.toString());
@@ -226,7 +231,7 @@ const getReferralStats = async (req, res) => {
       createdAt: ref.createdAt,
       totalDeposit,
       commission,
-      isActive: totalDeposit >= 100
+      isActive: totalDeposit >= minDeposit
     };
   });
 
@@ -239,7 +244,10 @@ const getReferralStats = async (req, res) => {
     activeUsersCount,
     totalBusinessVolume,
     referralEarnings: user.referralEarnings || 0,
-    referralList: listWithMetrics
+    referralList: listWithMetrics,
+    commRate,
+    minDeposit,
+    referralBonus: config?.referralBonus || 100
   });
 };
 
@@ -373,6 +381,10 @@ const firebaseLogin = async (req, res) => {
       const userIdNumber = Math.floor(100000 + Math.random() * 900000).toString();
       const userReferralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
 
+      // Fetch system config for dynamic bonus
+      const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+      const bonus = config?.referralBonus || 100;
+
       let referredBy = null;
       if (referralCode) {
         const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
@@ -388,8 +400,8 @@ const firebaseLogin = async (req, res) => {
         pin: '0000', // Default temporary PIN
         referralCode: userReferralCode,
         referredBy,
-        walletBalance: referredBy ? (config?.referralBonus || 100) : 0,
-        referralBonusAmount: referredBy ? (config?.referralBonus || 100) : 0,
+        walletBalance: referredBy ? bonus : 0,
+        referralBonusAmount: referredBy ? bonus : 0,
         isOtpVerified: true
       });
     }

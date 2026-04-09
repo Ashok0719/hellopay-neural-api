@@ -33,7 +33,7 @@
 
   // @desc    Update system config
   const updateConfig = async (req, res) => {
-    const { stockPlans, globalCashbackPercent, referralCommissionPercent, profitPercentage, adminExtraEnabled, adminProfitEnabled, depositEnabled, minDeposit, maxDeposit, withdrawalEnabled } = req.body;
+    const { stockPlans, globalCashbackPercent, referralCommissionPercent, referralBonus, profitPercentage, adminExtraEnabled, adminProfitEnabled, depositEnabled, minDeposit, maxDeposit, withdrawalEnabled } = req.body;
 
     try {
       let config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
@@ -44,6 +44,7 @@
       if (stockPlans) config.stockPlans = stockPlans;
       if (globalCashbackPercent !== undefined) config.globalCashbackPercent = globalCashbackPercent;
       if (referralCommissionPercent !== undefined) config.referralCommissionPercent = referralCommissionPercent;
+      if (referralBonus !== undefined) config.referralBonus = referralBonus;
       if (profitPercentage !== undefined) config.profitPercentage = profitPercentage;
       if (adminExtraEnabled !== undefined) config.adminExtraEnabled = adminExtraEnabled;
       if (adminProfitEnabled !== undefined) config.adminProfitEnabled = adminProfitEnabled;
@@ -69,6 +70,7 @@
         stockPlans: config.stockPlans,
         globalCashbackPercent: config.globalCashbackPercent,
         referralCommissionPercent: config.referralCommissionPercent,
+        referralBonus: config.referralBonus,
         profitPercentage: config.profitPercentage,
         adminExtraEnabled: config.adminExtraEnabled,
         adminProfitEnabled: config.adminProfitEnabled,
@@ -358,50 +360,65 @@ const reviewTransaction = async (req, res) => {
     const { id, action } = req.params;
     const transaction = await Transaction.findById(id);
     if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
-    if (transaction.status !== 'pending') return res.status(400).json({ message: 'Transaction already processed' });
+    if (transaction.status !== 'PENDING') return res.status(400).json({ message: 'Transaction already processed' });
 
     const user = await User.findById(transaction.senderId);
     if (!user) return res.status(404).json({ message: 'User owner not found' });
 
+    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+
     if (action === 'approve') {
-      user.walletBalance += transaction.amount;
-      
-      // Update historical aggregates
       if (transaction.type === 'add_money' || transaction.type === 'buy_stock') {
+        user.walletBalance += transaction.amount;
         user.totalDeposited = (user.totalDeposited || 0) + transaction.amount;
         
         // Task Progress Signal Integration
         await updateTaskProgress(user, transaction.amount);
         
-        // Referral Commission Integration (4% on Deposit)
+        // Referral Commission Integration
         if (user.referredBy) {
           const referrer = await User.findById(user.referredBy);
           if (referrer) {
-             const commPercent = referrer.referralPercent || config.referralCommissionPercent || config.globalCashbackPercent || 4;
+             const commPercent = referrer.referralPercent || config?.referralCommissionPercent || config?.globalCashbackPercent || 4;
              const comm = Number((transaction.amount * commPercent / 100).toFixed(2));
              referrer.walletBalance = Number((referrer.walletBalance + comm).toFixed(2));
              referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + comm).toFixed(2));
              await referrer.save();
-             await rebuildVirtualSplits(referrer._id, referrer.walletBalance, await Config.findOne({ key: 'SYSTEM_CONFIG' }));
+             await rebuildVirtualSplits(referrer._id, referrer.walletBalance, config);
              if (req.io) req.io.emit('userStatusChanged', { userId: referrer._id, walletBalance: referrer.walletBalance });
           }
         }
+
+        // Apply default cashback
+        const bonus = (transaction.amount * (config?.globalCashbackPercent || 0)) / 100;
+        if (bonus > 0) {
+          user.rewardBalance = (user.rewardBalance || 0) + bonus;
+          user.totalRewards = (user.totalRewards || 0) + bonus;
+        }
       } else if (transaction.type === 'withdrawal') {
         user.totalWithdrawn = (user.totalWithdrawn || 0) + transaction.amount;
+        // Balance was already deducted during requestWithdrawal
       }
       
-      // Apply default cashback if not already done by OCR
-      const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-      const bonus = (transaction.amount * (config?.globalCashbackPercent || 0)) / 100;
-      if (bonus > 0) {
-        user.rewardBalance = (user.rewardBalance || 0) + bonus;
-        user.totalRewards = (user.totalRewards || 0) + bonus;
-      }
-      
-      transaction.status = 'success';
+      transaction.status = 'SUCCESS';
       await user.save();
     } else if (action === 'reject') {
-      transaction.status = 'failed';
+      // Refund if it was a withdrawal
+      if (transaction.type === 'withdrawal') {
+        user.walletBalance += transaction.amount;
+        await user.save();
+        
+        // Create Refund Log
+        const WalletLog = require('../models/WalletLog');
+        await WalletLog.create({
+          userId: user._id,
+          action: 'credit',
+          amount: transaction.amount,
+          balanceAfter: user.walletBalance,
+          description: `Withdrawal Rejected - Refund: ₹${transaction.amount}`,
+        });
+      }
+      transaction.status = 'FAILED';
     }
 
     await transaction.save();

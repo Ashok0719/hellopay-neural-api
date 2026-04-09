@@ -200,4 +200,68 @@ const simulatePayment = async (req, res) => {
   });
 };
 
-module.exports = { createOrder, verifyPayment, getWalletHistory, getPublicConfig, simulatePayment };
+// @desc    Request withdrawal
+// @route   POST /api/wallet/withdraw
+// @access  Private
+const requestWithdrawal = async (req, res) => {
+  const { amount, pin } = req.body;
+  const config = await getSystemConfig();
+
+  if (!config.withdrawalEnabled) {
+    return res.status(403).json({ message: 'Withdrawals are currently disabled by admin' });
+  }
+
+  const withdrawAmount = parseFloat(amount);
+  if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
+    return res.status(400).json({ message: 'Invalid withdrawal amount' });
+  }
+
+  const user = await User.findById(req.user._id);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+
+  // Security PIN Check
+  if (!pin) {
+    return res.status(400).json({ message: 'Safety PIN required' });
+  }
+  if (!(await user.matchPin(pin))) {
+    return res.status(401).json({ message: 'Safety Protocol: Invalid PIN' });
+  }
+
+  if (user.walletBalance < withdrawAmount) {
+    return res.status(400).json({ message: 'Insufficient balance' });
+  }
+
+  // Deduct balance immediately & create pending transaction
+  user.walletBalance -= withdrawAmount;
+  await user.save();
+
+  await Transaction.create({
+    senderId: user._id,
+    receiverId: user._id, 
+    type: 'withdrawal',
+    amount: withdrawAmount,
+    status: 'PENDING',
+    referenceId: `wd_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+    description: `Withdrawal Request - ₹${withdrawAmount}`
+  });
+
+  await WalletLog.create({
+    userId: user._id,
+    action: 'debit',
+    amount: withdrawAmount,
+    balanceAfter: user.walletBalance,
+    description: `Withdrawal Request: ₹${withdrawAmount} (Pending Approval)`,
+  });
+
+  // Re-sync stocks since balance changed
+  await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
+
+  if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+
+  res.json({ 
+    message: 'Withdrawal request submitted for approval', 
+    walletBalance: user.walletBalance 
+  });
+};
+
+module.exports = { createOrder, verifyPayment, getWalletHistory, getPublicConfig, simulatePayment, requestWithdrawal };
