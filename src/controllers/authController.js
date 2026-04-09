@@ -40,14 +40,14 @@ const sendOtp = async (req, res) => {
 // @route   POST /api/auth/register
 // @access  Public
 const register = async (req, res) => {
-  const { name, phone, email, pin, referralCode } = req.body;
+  const { name, email, password, referralCode } = req.body;
 
-  if (!name || (!phone && !email) || !pin) {
-    return res.status(400).json({ message: 'Name, PIN and Contact details required' });
+  if (!name || !email || !password) {
+    return res.status(400).json({ message: 'Name, Email and Password required' });
   }
 
   // Prevent duplicate accounts
-  const existingUser = await User.findOne({ $or: [{ phone: phone || '___' }, { email: email || '___' }] });
+  const existingUser = await User.findOne({ email });
   if (existingUser) {
     return res.status(400).json({ message: 'Identity already bound to another node' });
   }
@@ -68,20 +68,16 @@ const register = async (req, res) => {
 
   const user = await User.create({
     name,
-    phone,
     email,
-    pin, // Store as text for 4-digit PIN demo, encrypt with bcrypt in production
+    password, 
     userIdNumber,
     referralCode: userReferralCode,
     referredBy,
-    walletBalance: referredBy ? 100 : 0, // ₹100 Welcome Bonus if referred
-    referralBonusAmount: referredBy ? 100 : 0, // Locked until first deposit >= 100
+    walletBalance: referredBy ? 100 : 0, 
+    referralBonusAmount: referredBy ? 100 : 0, 
     isOtpVerified: true,
     isSetupComplete: true
   });
-
-  // Neural Sync Deferred: 24/7 activation will be handled after the first deposit
-  // Removed syncUserStocks on registration as per new activation protocol
 
   const token = generateToken(user._id);
   setAuthCookie(res, token);
@@ -94,29 +90,18 @@ const register = async (req, res) => {
   });
 };
 
-// @desc    Verify OTP + PIN and Login
-// @route   POST /api/auth/login
-// @access  Public
 const login = async (req, res) => {
-  const { identifier, otp, pin } = req.body;
+  const { identifier, password } = req.body;
 
-  const storedOtp = otpStore.get(identifier);
-  if (otp !== "1234" && (!storedOtp || storedOtp !== otp)) {
-    return res.status(400).json({ message: 'Invalid or expired OTP' });
-  }
+  const user = await User.findOne({ email: identifier });
 
-  const user = await User.findOne({ $or: [{ phone: identifier }, { email: identifier }] });
-
-  if (!user || user.pin !== pin) {
-    return res.status(401).json({ message: 'Invalid Credentials: PIN mismatch' });
+  if (!user || !(await user.matchPassword(password))) {
+    return res.status(401).json({ message: 'Invalid Credentials: Passkey mismatch' });
   }
 
   if (user.isBlocked) {
     return res.status(403).json({ message: 'Identity suspended by Neural Admin' });
   }
-
-  // Clear OTP
-  otpStore.delete(identifier);
 
   const token = generateToken(user._id);
   setAuthCookie(res, token);
@@ -131,7 +116,8 @@ const login = async (req, res) => {
     isBlocked: user.isBlocked,
     walletBalance: user.walletBalance,
     rewardBalance: user.rewardBalance || 0,
-    token: generateToken(user._id),
+    isOpenSelling: user.isOpenSelling || false,
+    token: token,
   });
 };
 
@@ -514,7 +500,7 @@ const saveUpi = async (req, res) => {
 
 const completeProfile = async (req, res) => {
   try {
-    const { name, pin } = req.body;
+    const { name, password } = req.body;
     const user = await User.findById(req.user._id);
 
     if (!user) {
@@ -522,7 +508,7 @@ const completeProfile = async (req, res) => {
     }
 
     user.name = name || user.name;
-    user.pin = pin || user.pin;
+    if (password) user.password = password;
     user.isSetupComplete = true;
     await user.save();
 
