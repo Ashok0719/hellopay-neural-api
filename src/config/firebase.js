@@ -7,31 +7,44 @@ try {
     let serviceAccount;
     const serviceAccountContent = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
     
-    if (serviceAccountContent && serviceAccountContent.trim() !== "") {
+    // Strategy A: Check for Render Secret File (Most Reliable)
+    const fs = require('fs');
+    const path = require('path');
+    const secretPath = path.join('/opt/render/project/src/firebase-key.json'); // Default Render path if file is in root
+    const altSecretPath = path.join(__dirname, '../../firebase-key.json');
+
+    if (fs.existsSync(secretPath)) {
       try {
-        // Sanitize: Aggressively remove hidden control characters (except allowed ones)
-        // This fixes the "Bad control character" error from Render's env var pasting
+        serviceAccount = JSON.parse(fs.readFileSync(secretPath, 'utf8'));
+        console.log('[NEURAL] Firebase Key loaded from Render Secret File system.');
+      } catch (e) {
+        console.warn('[NEURAL WARNING] Failed to parse Secret File JSON:', e.message);
+      }
+    } else if (fs.existsSync(altSecretPath)) {
+      try {
+        serviceAccount = JSON.parse(fs.readFileSync(altSecretPath, 'utf8'));
+        console.log('[NEURAL] Firebase Key loaded from local/alt secret file.');
+      } catch (e) {
+        console.warn('[NEURAL WARNING] Failed to parse Alt Secret File JSON:', e.message);
+      }
+    }
+
+    // Strategy B: Fallback to Environment Variable with Deep Sanitization
+    if (!serviceAccount && serviceAccountContent && serviceAccountContent.trim() !== "") {
+      try {
         let sanitizedContent = serviceAccountContent.trim();
-        
-        // Remove literal double quotes if the whole thing is quoted
         if (sanitizedContent.startsWith('"') && sanitizedContent.endsWith('"')) {
           sanitizedContent = sanitizedContent.substring(1, sanitizedContent.length - 1);
         }
-
-        // Replace literal newlines with \n for the private_key to be JSON-safe
         sanitizedContent = sanitizedContent.replace(/\r?\n/g, '\\n');
-        
-        // Final cleaning of non-printable ASCII/Control chars that break JSON.parse
         sanitizedContent = sanitizedContent.replace(/[\x00-\x1F\x7F-\x9F]/g, (match) => {
           if (match === '\n') return '\\n';
           if (match === '\r') return '';
           return ''; 
         });
-
         serviceAccount = JSON.parse(sanitizedContent);
       } catch (e) {
-        console.warn('[NEURAL WARNING] Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON env var. Technical Detail:', e.message);
-        console.warn('[NEURAL HELP] Ensure your Render env var value starts with { and ends with } and has no extra spaces.');
+        console.warn('[NEURAL WARNING] Env var parse failed. Falling back to Strategy C.');
       }
     }
 
