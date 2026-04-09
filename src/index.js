@@ -6,7 +6,6 @@ if (dns.setServers) {
 }
 
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
 const morgan = require('morgan');
 const helmet = require('helmet');
@@ -20,26 +19,38 @@ const transactionRoutes = require('./routes/transactionRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const listingRoutes = require('./routes/listingRoutes');
 const { errorHandler } = require('./middleware/errorMiddleware');
-const connectDB = require('./config/db');
 const dotenv = require('dotenv');
 
 dotenv.config();
-connectDB().then(async () => {
-  const Config = require('./models/Config');
-  const existingConfig = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-  if (!existingConfig) {
-    console.log('Initializing Neural Base Configuration...');
-    await Config.create({
-      key: 'SYSTEM_CONFIG',
-      stockPlans: [
-        { amount: 1000, code: 'SIG1000', isActive: true },
-        { amount: 5000, code: 'SIG5000', isActive: true }
-      ],
-      globalCashbackPercent: 4,
-      profitPercentage: 4
-    });
+
+const admin = require('./config/firebase');
+
+// Neural Core Sync: Check System Configuration in Firebase RTDB
+const Config = require('./models/Config');
+(async () => {
+  try {
+    const existingConfig = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+    if (!existingConfig) {
+      console.log('[NEURAL] Initializing Base Configuration in Firebase RTDB...');
+      await Config.create({
+        key: 'SYSTEM_CONFIG',
+        stockPlans: [
+          { amount: 1000, code: 'SIG1000', isActive: true },
+          { amount: 5000, code: 'SIG5000', isActive: true }
+        ],
+        globalCashbackPercent: 4,
+        profitPercentage: 4,
+        adminProfitEnabled: true,
+        depositEnabled: true,
+        withdrawalEnabled: true
+      });
+    } else {
+      console.log('[NEURAL] Configuration Signal Detected in Firebase RTDB');
+    }
+  } catch (err) {
+    console.warn('[NEURAL ERROR] Failed to initialize Config in Firebase RTDB:', err.message);
   }
-});
+})();
 
 const app = express();
 const server = require('http').createServer(app);

@@ -26,9 +26,10 @@ try {
 
     if (serviceAccount) {
       admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
+        credential: admin.credential.cert(serviceAccount),
+        databaseURL: "https://hellopay-89da2-default-rtdb.firebaseio.com/"
       });
-      console.log(`[NEURAL] Firebase Admin Initialized for project: ${serviceAccount.project_id}`);
+      console.log(`[NEURAL] Firebase Admin & Realtime DB Initialized for project: ${serviceAccount.project_id}`);
     } else {
       console.warn('[NEURAL WARNING] Firebase Service Account not found. Social login verification will fail.');
     }
