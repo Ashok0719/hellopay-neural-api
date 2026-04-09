@@ -101,6 +101,9 @@ app.use('/api/', limiter);
 app.use('/uploads', express.static('uploads'));
 
 // Routes
+const { saveUpi } = require('./controllers/authController');
+const { protect } = require('./middleware/authMiddleware');
+
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/admin', adminRoutes);
@@ -110,6 +113,10 @@ app.use('/api/listings', listingRoutes);
 app.use('/api/stocks', require('./routes/stockRoutes'));
 app.use('/api/support', require('./routes/supportRoutes'));
 app.use('/api/tasks', require('./routes/taskRoutes'));
+
+// Feature: Unique UPI Identity Flow
+const { upload }  = require('./middleware/uploadMiddleware');
+app.post('/api/save-upi', protect, upload.single('qrCode'), saveUpi);
 
 app.get('/', (req, res) => res.send('HelloPay Neural API - Online'));
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));

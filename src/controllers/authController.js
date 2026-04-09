@@ -402,10 +402,10 @@ const changePin = async (req, res) => {
  */
 const saveUpi = async (req, res) => {
   try {
-    const { upiId } = req.body;
-    const user = await User.findById(req.user._id);
-
+    let { upiId } = req.body;
     if (!upiId) return res.status(400).json({ success: false, message: 'UPI ID required' });
+    
+    upiId = upiId.toLowerCase().trim();
 
     // 1. Regex Validation
     const upiRegex = /^(?!.*\.\.)(?!.*__)(?!.*\.-)(?!.*-\.)[a-z0-9]+([._-]?[a-z0-9]+)*@[a-z]{2,}$/;
@@ -428,17 +428,31 @@ const saveUpi = async (req, res) => {
       return res.status(400).json({ success: false, message: `Invalid handler @${handle}. Allowed: ${validHandles.join(', ')}` });
     }
 
+    const { pin } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user.pin) {
+      // First time setting PIN
+    } else if (!pin || pin !== user.pin) {
+      return res.status(401).json({ success: false, message: 'Invalid Security PIN' });
+    }
+
     // 4. Duplicate Check
     const existing = await User.findOne({ upiId, _id: { $ne: user._id } });
     if (existing) {
-      return res.status(400).json({ success: false, message: 'This UPI is already linked to another identity node' });
+      return res.status(400).json({ success: false, message: 'This UPI ID is already linked to another account' });
     }
 
     // 5. Save Verified Status
     user.upiId = upiId;
     user.verifiedUpiId = upiId;
-    user.isUpiVerified = true; // Confirmed via intent flow on frontend
+    user.isUpiVerified = true; 
     user.upiModifiedAt = new Date();
+    
+    if (req.file) {
+      user.qrCode = `/uploads/${req.file.filename}`;
+    }
+
     await user.save();
 
     res.json({ 

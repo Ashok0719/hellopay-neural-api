@@ -9,6 +9,7 @@ const stockTransactionSchema = new mongoose.Schema({
   referenceId: { type: String },
   screenshot: { type: String },
   status: { type: String, enum: ['INIT', 'SUCCESS', 'FAILED', 'PENDING_REVIEW', 'CANCELLED', 'TIMEOUT', 'FRAUD_FLAGGED'], default: 'INIT' },
+  upiId: { type: String }, // UPI ID used for payment
   utr: { type: String, unique: true, sparse: true },
   ocrData: {
     extractedAmount: { type: Number },
