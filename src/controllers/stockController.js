@@ -152,12 +152,12 @@ exports.buyStock = async (req, res) => {
 
     // Self-purchase guard
     if (stock.ownerId._id.toString() === buyer._id.toString()) {
-      await auditUserBehavior(buyer._id, 'SELF_BUY_ATTEMPT', 50, req, 'User tried to buy own virtual split');
+      auditUserBehavior(buyer._id, 'SELF_BUY_ATTEMPT', 50, req, 'User tried to buy own virtual split');
       return res.status(400).json({ success: false, message: 'Operation prohibited: Self-purchase detected' });
     }
 
     // Fraud audit
-    await auditUserBehavior(buyer._id, 'STOCK_BUY_INIT', 5, req, `Stock: ${stockId}`);
+    auditUserBehavior(buyer._id, 'STOCK_BUY_INIT', 5, req, `Stock: ${stockId}`);
 
     // Lock virtual unit → RESERVED (Strict 20-minute Neural Window)
     stock.status      = 'LOCKED';
@@ -202,7 +202,7 @@ exports.createStockOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Self-purchase forbidden' });
     }
 
-    await auditUserBehavior(buyer._id, 'ORDER_CREATE', 2, req, `Stock: ${stockId}`);
+    auditUserBehavior(buyer._id, 'ORDER_CREATE', 2, req, `Stock: ${stockId}`);
 
     const orderId = 'ORD_' + Date.now();
     res.json({
