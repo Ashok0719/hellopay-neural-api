@@ -10,15 +10,23 @@ try {
     // Strategy A: Check for Render Secret File (Most Reliable)
     const fs = require('fs');
     const path = require('path');
-    const secretPath = path.join('/opt/render/project/src/firebase-key.json'); // Default Render path if file is in root
+    const secretPath = '/etc/secrets/firebase-key.json'; // Official Render mount point
+    const rootSecretPath = path.join(process.cwd(), 'firebase-key.json');
     const altSecretPath = path.join(__dirname, '../../firebase-key.json');
 
     if (fs.existsSync(secretPath)) {
       try {
         serviceAccount = JSON.parse(fs.readFileSync(secretPath, 'utf8'));
-        console.log('[NEURAL] Firebase Key loaded from Render Secret File system.');
+        console.log('[NEURAL] Firebase Key loaded from /etc/secrets/firebase-key.json');
       } catch (e) {
-        console.warn('[NEURAL WARNING] Failed to parse Secret File JSON:', e.message);
+        console.warn('[NEURAL WARNING] Failed to parse /etc/secrets JSON:', e.message);
+      }
+    } else if (fs.existsSync(rootSecretPath)) {
+      try {
+        serviceAccount = JSON.parse(fs.readFileSync(rootSecretPath, 'utf8'));
+        console.log('[NEURAL] Firebase Key loaded from root/firebase-key.json');
+      } catch (e) {
+        console.warn('[NEURAL WARNING] Failed to parse root JSON:', e.message);
       }
     } else if (fs.existsSync(altSecretPath)) {
       try {
