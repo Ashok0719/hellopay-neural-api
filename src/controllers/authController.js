@@ -4,6 +4,16 @@ const Config = require('../models/Config');
 const generateToken = require('../utils/generateToken');
 const { syncUserStocks } = require('../utils/financeLogic');
 
+// Helper to set PWA-compliant secure cookie (30 days persistence)
+const setAuthCookie = (res, token) => {
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: true, // Always true for PWA compatibility on modern web
+    sameSite: 'None', 
+    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+  });
+};
+
 // Mock OTP storage (In production, use Redis or a dedicated OTP service)
 const otpStore = new Map();
 
@@ -11,7 +21,7 @@ const otpStore = new Map();
 // @route   POST /api/auth/send-otp
 // @access  Public
 const sendOtp = async (req, res) => {
-  const { identifier } = req.body; // Can be phone or email
+  const { identifier } = req.body;
 
   if (!identifier) {
     return res.status(400).json({ message: 'Mobile or Email is required' });
@@ -73,11 +83,14 @@ const register = async (req, res) => {
   // Neural Sync Deferred: 24/7 activation will be handled after the first deposit
   // Removed syncUserStocks on registration as per new activation protocol
 
+  const token = generateToken(user._id);
+  setAuthCookie(res, token);
+
   res.status(201).json({
     _id: user._id,
     name: user.name,
     userIdNumber,
-    token: generateToken(user._id)
+    token
   });
 };
 
@@ -104,6 +117,9 @@ const login = async (req, res) => {
 
   // Clear OTP
   otpStore.delete(identifier);
+
+  const token = generateToken(user._id);
+  setAuthCookie(res, token);
 
   res.json({
     _id: user._id,
@@ -138,18 +154,19 @@ const getUserProfile = async (req, res) => {
       isBlocked: user.isBlocked,
       isUpiVerified: user.isUpiVerified,
       verifiedUpiId: maskedUpi,
-      walletBalance: user.walletBalance,
-      referralCode: user.referralCode,
       upiId: maskedUpi,
       pin: user.pin ? "****" : null,
       qrCode: user.qrCode,
+      walletBalance: user.walletBalance,
+      referralCode: user.referralCode,
       referralEarnings: user.referralEarnings || 0,
       upiModifiedAt: user.upiModifiedAt,
       totalDeposited: user.totalDeposited || 0,
       totalWithdrawn: user.totalWithdrawn || 0,
       rewardBalance: user.rewardBalance || 0,
       totalRewards: user.totalRewards || 0,
-      referralBonusAmount: user.referralBonusAmount || 0
+      referralBonusAmount: user.referralBonusAmount || 0,
+      token: generateToken(user._id)
     });
   } else {
     res.status(404);
@@ -353,12 +370,15 @@ const firebaseLogin = async (req, res) => {
     }
 
     // 3. Emit Signal & Respond
+    const token = generateToken(user._id);
+    setAuthCookie(res, token);
+
     res.json({
       _id: user._id,
       name: user.name,
       email: user.email,
       userIdNumber: user.userIdNumber,
-      token: generateToken(user._id),
+      token,
       needsSetup: !user.isSetupComplete
     });
 
