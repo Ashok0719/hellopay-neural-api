@@ -9,7 +9,8 @@ const {
   updateUserProfile, 
   verifyUpi,
   firebaseLogin,
-  changePin
+  changePin,
+  completeProfile
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const { otpValidation } = require('../middleware/validator');
