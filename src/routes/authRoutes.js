@@ -10,7 +10,8 @@ const {
   verifyUpi,
   firebaseLogin,
   changePin,
-  completeProfile
+  completeProfile,
+  toggleSelling
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const { otpValidation } = require('../middleware/validator');
@@ -28,5 +29,6 @@ router.put('/profile', protect, upload.single('qrCode'), updateUserProfile);
 router.get('/referrals', protect, getReferralStats);
 router.post('/change-pin', protect, changePin);
 router.post('/complete-profile', protect, completeProfile);
+router.post('/toggle-selling', protect, toggleSelling);
 
 module.exports = router;

@@ -49,6 +49,7 @@ const userSchema = new mongoose.Schema({
   // Custom Profit Levels (Neural Overrides)
   referralPercent: { type: Number, default: 4 }, // Individual override, defaults to current global
   profitPercent: { type: Number, default: 8 },   // Individual override, defaults to current global
+  isOpenSelling: { type: Boolean, default: false }, // Neural marketplace toggle
 }, { timestamps: true });
 
 userSchema.pre('save', async function () {

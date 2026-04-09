@@ -27,11 +27,17 @@ exports.getStocks = async (req, res) => {
     const stocks = await Stock.find({ 
       status: { $ne: 'SOLD' }
     })
-      .populate('ownerId', 'name upiId qrCode userIdNumber')
+      .populate('ownerId', 'name upiId qrCode userIdNumber isOpenSelling')
       .populate('selectedBy', 'name')
       .sort({ isPinned: -1, createdAt: -1 });
 
-    res.json({ success: true, stocks });
+    // Feature: Marketplace Visibility (Neural Toggle)
+    const filtered = stocks.filter(s => {
+      // Always show if owner is verified or if owner has explicitly opened selling
+      return s.ownerId && s.ownerId.isOpenSelling;
+    });
+
+    res.json({ success: true, stocks: filtered });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

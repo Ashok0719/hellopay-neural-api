@@ -166,6 +166,7 @@ const getUserProfile = async (req, res) => {
       rewardBalance: user.rewardBalance || 0,
       totalRewards: user.totalRewards || 0,
       referralBonusAmount: user.referralBonusAmount || 0,
+      isOpenSelling: user.isOpenSelling || false,
       token: generateToken(user._id)
     });
   } else {
@@ -537,6 +538,32 @@ const completeProfile = async (req, res) => {
   }
 };
 
+const toggleSelling = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    
+    // Safety: User MUST have verified UPI to open selling
+    if (!user.isOpenSelling && !user.isUpiVerified) {
+       return res.status(400).json({ 
+         success: false, 
+         message: 'Neuro-Constraint: You must verify your UPI identity before opening sales.' 
+       });
+    }
+
+    user.isOpenSelling = !user.isOpenSelling;
+    await user.save();
+
+    res.json({ 
+      success: true, 
+      isOpenSelling: user.isOpenSelling,
+      message: user.isOpenSelling ? 'Neural Marketplace: ON' : 'Neural Marketplace: OFF'
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Marketplace toggle failed' });
+  }
+};
+
 module.exports = {
   sendOtp,
   register,
@@ -548,5 +575,6 @@ module.exports = {
   firebaseLogin,
   changePin,
   saveUpi,
-  completeProfile
+  completeProfile,
+  toggleSelling
 };
