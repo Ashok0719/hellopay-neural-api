@@ -144,12 +144,14 @@ const getWalletHistory = async (req, res) => {
 // @access  Private
 const getPublicConfig = async (req, res) => {
   const config = await getSystemConfig();
+  const totalUsers = await User.countDocuments();
   res.json({
     stockPlans: config.stockPlans,
     minDeposit: config.minDeposit,
     maxDeposit: config.maxDeposit,
     globalCashbackPercent: config.globalCashbackPercent,
-    depositEnabled: config.depositEnabled
+    depositEnabled: config.depositEnabled,
+    totalUsers
   });
 };
 
