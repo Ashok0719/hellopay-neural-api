@@ -370,9 +370,12 @@ const firebaseLogin = async (req, res) => {
   const heartbeat = setInterval(() => console.log('[TRACE] SYNC HEARTBEAT - Node is still processing...'), 2000);
 
   try {
-    // 1. Verify Neural Signal via Firebase
-    console.log(`[TRACE] Starting verification for UID: ${idToken.substring(0, 10)}...`);
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    // 1. Verify Neural Signal via Firebase (with 5s Burst Timeout)
+    console.log(`[TRACE] Verify Token Start...`);
+    const decodedToken = await Promise.race([
+      admin.auth().verifyIdToken(idToken),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Firebase Verify Timeout')), 5000))
+    ]);
     const { email, name, picture, uid } = decodedToken;
     console.log(`[TRACE] Firebase Verified: ${email}`);
 

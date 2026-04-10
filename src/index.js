@@ -85,7 +85,7 @@ app.use((req, res, next) => {
 app.use(morgan('dev'));
 
 app.use(cors({
-  origin: "https://hellopay-userweb.vercel.app",
+  origin: "*", // Nuclear Option: Allow all origins to break the preflight hang
   credentials: true
 }));
 app.use(express.json());
