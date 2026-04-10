@@ -13,7 +13,6 @@ const {
   completeProfile,
   toggleSelling,
   debugFirebase,
-  guestLogin,
   forgotPassword
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
@@ -25,7 +24,6 @@ router.post('/register', register);
 router.post('/login', login);
 router.post('/reset-password-pin', forgotPassword);
 router.post('/firebase-login', firebaseLogin);
-router.post('/guest-login', guestLogin);
 router.get('/debug-firebase', debugFirebase);
 router.post('/verify-otp', otpValidation, login); 
 router.post('/verify-upi', protect, verifyUpi);

@@ -784,10 +784,53 @@ const updateUserPercents = async (req, res) => {
   }
 };
 
+const bulkUserAction = async (req, res) => {
+  try {
+    const { ids, action } = req.body;
+    if (!ids || !Array.isArray(ids)) return res.status(400).json({ message: 'Invalid entity set' });
+
+    console.log(`[Neural Bulk] Initiating ${action} for ${ids.length} nodes`);
+
+    if (action === 'delete') {
+      const Stock = require('../models/Stock');
+      const StockTransaction = require('../models/StockTransaction');
+      const Transaction = require('../models/Transaction');
+      const FraudLog = require('../models/FraudLog');
+      const WalletLog = require('../models/WalletLog');
+      const Payment = require('../models/Payment');
+      const Recharge = require('../models/Recharge');
+
+      await Stock.deleteMany({ ownerId: { $in: ids } });
+      await StockTransaction.deleteMany({ $or: [{ buyerId: { $in: ids } }, { sellerId: { $in: ids } }] });
+      await Transaction.deleteMany({ $or: [{ senderId: { $in: ids } }, { receiverId: { $in: ids } }] });
+      await FraudLog.deleteMany({ userId: { $in: ids } });
+      await WalletLog.deleteMany({ userId: { $in: ids } });
+      await Payment.deleteMany({ userId: { $in: ids } });
+      await Recharge.deleteMany({ userId: { $in: ids } });
+      await User.deleteMany({ _id: { $in: ids } });
+    } else if (action === 'block') {
+      await User.updateMany({ _id: { $in: ids } }, { isBlocked: true });
+    } else if (action === 'unblock') {
+      await User.updateMany({ _id: { $in: ids } }, { isBlocked: false });
+    }
+
+    if (req.io) {
+      req.io.emit('configUpdated');
+      req.io.emit('stock_update', { action: 'refresh' });
+    }
+
+    res.json({ success: true, message: `Neural Bulk ${action} completed for ${ids.length} nodes.` });
+  } catch (err) {
+    console.error('Bulk Action Failure:', err);
+    res.status(500).json({ message: 'Neural Bulk sequence failed' });
+  }
+};
+
 module.exports = { 
   getConfig, updateConfig, getAnalytics, getAllUsers, toggleUserBlock, 
   updateUserBalance, deleteUser, getAllTransactions, reviewTransaction, 
   initializeStock, adminVerifyStockTransaction, getAllStocks, toggleStockPin,
   deleteStock, deleteTransaction, resplitUserWallet, overrideWalletSplits,
-  getFraudDashboard, updateUserPercents
+  getFraudDashboard, updateUserPercents,
+  bulkUserAction
 };

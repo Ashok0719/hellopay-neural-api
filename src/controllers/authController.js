@@ -452,28 +452,6 @@ const debugFirebase = async (req, res) => {
   }
 };
 
-const guestLogin = async (req, res) => {
-  try {
-    const guestPhone = `GUEST_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
-    const userReferralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
-    
-    const user = await User.create({
-      name: 'Neural Guest',
-      phone: guestPhone,
-      pin: '0000',
-      userIdNumber: Math.floor(100000 + Math.random() * 900000),
-      referralCode: userReferralCode,
-      isOtpVerified: true,
-      isSetupComplete: false
-    });
-
-    const token = generateToken(user._id);
-    setAuthCookie(res, token);
-    res.json({ _id: user._id, name: user.name, token, needsSetup: true });
-  } catch (e) {
-    res.status(500).json({ message: 'Guest initialization failed' });
-  }
-};
 
 // @desc    Change user PIN with old PIN verification
 // @route   POST /api/auth/change-pin
@@ -657,6 +635,5 @@ module.exports = {
   completeProfile,
   toggleSelling,
   forgotPassword,
-  debugFirebase,
-  guestLogin
+  debugFirebase
 };
