@@ -70,10 +70,9 @@ app.use(helmet({
   crossOriginOpenerPolicy: false, 
 })); 
 
-// Step 6: Force COOP & COEP for Google Auth Stability
+// Reset COOP to defaults to prevent browser sync-blocking
 app.use((req, res, next) => {
-  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
-  res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
+  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
   next();
 });
 

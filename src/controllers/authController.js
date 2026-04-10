@@ -367,6 +367,7 @@ const updateUserProfile = async (req, res) => {
 const firebaseLogin = async (req, res) => {
   const { idToken, referralCode } = req.body;
   const admin = require('../config/firebase');
+  const heartbeat = setInterval(() => console.log('[TRACE] SYNC HEARTBEAT - Node is still processing...'), 2000);
 
   try {
     // 1. Verify Neural Signal via Firebase
@@ -439,6 +440,8 @@ const firebaseLogin = async (req, res) => {
       message: 'Invalid Neural Signal: Firebase Auth Failure',
       technicalDetail: error.message 
     });
+  } finally {
+    clearInterval(heartbeat);
   }
 };
 
