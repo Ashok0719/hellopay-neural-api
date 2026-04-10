@@ -12,6 +12,7 @@ const {
   getAllTransactions, 
   reviewTransaction,
   updateUserBalance,
+  initializeStock,
   adminVerifyStockTransaction,
   getAllStocks,
   toggleStockPin,
