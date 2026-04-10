@@ -214,54 +214,69 @@ const getUserProfile = async (req, res) => {
 // @route   GET /api/auth/referrals
 // @access  Private
 const getReferralStats = async (req, res) => {
-  const user = await User.findById(req.user._id);
-  const referrals = await User.find({ referredBy: req.user._id }, 'name userIdNumber createdAt walletBalance');
+  try {
+    const user = await User.findById(req.user._id);
+    const referrals = await User.find({ referredBy: req.user._id }, 'name userIdNumber createdAt walletBalance totalDeposited');
 
-  const Transaction = require('../models/Transaction');
-  const referralIds = referrals.map(r => r._id);
+    const StockTransaction = require('../models/StockTransaction');
+    const referralIds = referrals.map(r => r._id);
 
-  // Fetch all successful deposit signals from this downline
-  const depositStats = await Transaction.find({
-    senderId: { $in: referralIds },
-    status: 'success',
-    type: { $in: ['add_money', 'buy_stock'] }
-  });
+    // Fetch successful rotation signals (deposits) from this downline
+    const stockTransactions = await StockTransaction.find({
+      buyerId: { $in: referralIds },
+      status: 'SUCCESS'
+    });
 
-  // Calculate detailed metrics per referral (Real-Time Yield Sync)
-  const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-  const commRate = config?.referralCommissionPercent || 4;
-  const minDeposit = config?.minDeposit || 100;
+    const now = new Date();
+    const startOfDay = new Date(now.setHours(0,0,0,0));
+    const startOfWeek = new Date(new Date().setDate(now.getDate() - 7));
+    const startOfMonth = new Date(new Date().setMonth(now.getMonth() - 1));
 
-  const listWithMetrics = referrals.map(ref => {
-    const userDeposits = depositStats.filter(tx => tx.senderId.toString() === ref._id.toString());
-    const totalDeposit = userDeposits.reduce((sum, tx) => sum + (tx.amount || 0), 0);
-    const commission = Number((totalDeposit * commRate / 100).toFixed(2));
+    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+    const commRate = config?.referralCommissionPercent || 4;
+    const minDeposit = config?.minDeposit || 100;
 
-    return {
-      _id: ref._id,
-      name: ref.name,
-      userIdNumber: ref.userIdNumber,
-      createdAt: ref.createdAt,
-      totalDeposit,
-      commission,
-      isActive: totalDeposit >= minDeposit
-    };
-  });
+    const listWithMetrics = referrals.map(ref => {
+      const userTxs = stockTransactions.filter(tx => tx.buyerId.toString() === ref._id.toString());
+      
+      const dailyDepositRaw = userTxs.filter(tx => new Date(tx.updatedAt) >= startOfDay).reduce((sum, tx) => sum + (tx.amount || 0), 0);
+      const weeklyDepositRaw = userTxs.filter(tx => new Date(tx.updatedAt) >= startOfWeek).reduce((sum, tx) => sum + (tx.amount || 0), 0);
+      const monthlyDepositRaw = userTxs.filter(tx => new Date(tx.updatedAt) >= startOfMonth).reduce((sum, tx) => sum + (tx.amount || 0), 0);
+      const totalDeposit = userTxs.reduce((sum, tx) => sum + (tx.amount || 0), 0);
+      
+      const commission = Number((totalDeposit * commRate / 100).toFixed(2));
 
-  const totalBusinessVolume = listWithMetrics.reduce((sum, ref) => sum + ref.totalDeposit, 0);
-  const activeUsersCount = listWithMetrics.filter(ref => ref.isActive).length;
+      return {
+        _id: ref._id,
+        name: ref.name,
+        userIdNumber: ref.userIdNumber,
+        createdAt: ref.createdAt,
+        totalDeposit,
+        dailyDeposit: dailyDepositRaw,
+        weeklyDeposit: weeklyDepositRaw,
+        monthlyDeposit: monthlyDepositRaw,
+        commission,
+        isActive: totalDeposit >= minDeposit
+      };
+    });
 
-  res.json({
-    referralCode: user.referralCode,
-    totalReferrals: referrals.length,
-    activeUsersCount,
-    totalBusinessVolume,
-    referralEarnings: user.referralEarnings || 0,
-    referralList: listWithMetrics,
-    commRate,
-    minDeposit,
-    referralBonus: config?.referralBonus || 100
-  });
+    const totalBusinessVolume = listWithMetrics.reduce((sum, ref) => sum + ref.totalDeposit, 0);
+    const activeUsersCount = listWithMetrics.filter(ref => ref.isActive).length;
+
+    res.json({
+      referralCode: user.referralCode,
+      totalReferrals: referrals.length,
+      activeUsersCount,
+      totalBusinessVolume,
+      referralEarnings: user.referralEarnings || 0,
+      referralList: listWithMetrics,
+      commRate,
+      minDeposit,
+      referralBonus: config?.referralBonus || 100
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Neural History Extraction Failed', error: err.message });
+  }
 };
 
 // @desc    Verify UPI ID via ₹1 Micro-Transaction
