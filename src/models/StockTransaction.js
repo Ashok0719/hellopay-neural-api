@@ -8,7 +8,9 @@ const stockTransactionSchema = new mongoose.Schema({
   amount: { type: Number, required: true },
   utr: { type: String, unique: true, sparse: true },
   screenshot: { type: String },
-  status: { type: String, enum: ['INIT', 'SUCCESS', 'FAILED', 'PENDING_REVIEW', 'FRAUD_FLAGGED', 'CANCELLED'], default: 'INIT' },
+  status: { type: String, enum: ['PENDING_PAYMENT', 'PENDING_VERIFICATION', 'SUCCESS', 'FAILED'], default: 'PENDING_PAYMENT' },
+  referenceUpi: { type: String }, // To store expected UPI ID for verification
+  type: { type: String, default: 'ROTATION' },
   isProcessed: { type: Boolean, default: false },
   confidenceScore: { type: Number, default: 0 },
   ocrData: { type: Object },

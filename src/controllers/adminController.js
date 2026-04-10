@@ -475,7 +475,7 @@ const adminVerifyStockTransaction = async (req, res) => {
     const transaction = await StockTransaction.findById(id);
     if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
     
-    if (transaction.status !== 'INIT' && transaction.status !== 'FAILED' && transaction.status !== 'PENDING_REVIEW') {
+    if (!['PENDING_PAYMENT', 'PENDING_VERIFICATION', 'FAILED', 'INIT', 'PENDING_REVIEW'].includes(transaction.status)) {
       return res.status(400).json({ message: 'Transaction already processed or completed' });
     }
 

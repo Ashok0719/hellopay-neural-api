@@ -243,7 +243,8 @@ exports.buyStock = async (req, res) => {
       buyerId:       buyer._id,
       sellerId:      stock.ownerId._id,
       amount:        expectedAmount,
-      status:        'INIT'
+      referenceUpi:  stock.ownerId.upiId, // Store for OCR validation
+      status:        'PENDING_PAYMENT'
     });
 
     req.io.emit('stock_update', { action: 'locked', stockId: stock._id });
@@ -323,11 +324,11 @@ exports.uploadPaymentScreenshot = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid UTR format. Must be 12 digits.' });
     }
 
-    const transaction = await StockTransaction.findOne({ _id: id, buyerId: buyer._id, status: 'INIT', isProcessed: { $ne: true } })
+    const transaction = await StockTransaction.findOne({ _id: id, buyerId: buyer._id, status: 'PENDING_PAYMENT', isProcessed: { $ne: true } })
       .populate('sellerId', 'upiId name');
       
     if (!transaction) {
-      return res.status(400).json({ success: false, message: 'Invalid transaction flow. Please complete payment using Pay Now.' });
+      return res.status(400).json({ success: false, message: 'Invalid transaction node. Signal expected: PENDING_PAYMENT' });
     }
 
     let confidenceScore = 0;
@@ -453,18 +454,18 @@ exports.uploadPaymentScreenshot = async (req, res) => {
        await executeStockRotation(transaction, req);
        return res.json({ success: true, message: 'Payment auto-verified successfully via Neural OCR.', status: 'SUCCESS' });
     } else if (utrValid && amountMatch) {
-       // GOLD MATCH: UTR & AMOUNT MATCH, BUT UPI NOT DETECTED -> PENDING REVIEW
-       transaction.status = 'PENDING_REVIEW';
+       // GOLD MATCH: UTR & AMOUNT MATCH, BUT UPI NOT DETECTED -> PENDING VERIFICATION
+       transaction.status = 'PENDING_VERIFICATION';
        transaction.confidenceScore = 75;
        await transaction.save();
-       return res.json({ success: true, message: 'UTR and Amount matched. Admin verifying receiver identity...', status: 'PENDING_REVIEW' });
+       return res.json({ success: true, message: 'UTR and Amount matched. Awaiting final identity validation...', status: 'PENDING_VERIFICATION' });
     } else {
        // SYSTEM FAULT: MISMATCH DETECTED
-       transaction.status = 'FRAUD_FLAGGED';
+       transaction.status = 'FAILED';
        transaction.confidenceScore = 30;
        await transaction.save();
 
-       // Release stock since it clearly didn't match
+       // Release stock node since signal is invalid
        const stock = await Stock.findById(transaction.stockId);
        if (stock) {
          stock.status = 'AVAILABLE';
@@ -474,7 +475,7 @@ exports.uploadPaymentScreenshot = async (req, res) => {
        
        return res.status(400).json({ 
          success: false, 
-         message: 'Verification Failed: Amount or UTR mismatch detected. Please check your data and retry.', 
+         message: 'Verification Failed: Amount or UTR mismatch detected.', 
          status: 'FAILED' 
        });
     }
@@ -502,7 +503,7 @@ exports.cancelStockTransaction = async (req, res) => {
     }
 
     if (transaction) {
-      transaction.status = 'CANCELLED';
+      transaction.status = 'FAILED';
       await transaction.save();
     }
 
@@ -535,19 +536,35 @@ exports.cancelStockTransaction = async (req, res) => {
 exports.adminVerifyTransaction = async (req, res) => {
   try {
     const { id } = req.params;
+    const { status } = req.body; // SUCCESS or FAILED
     const transaction = await StockTransaction.findById(id);
 
     if (!transaction) return res.status(404).json({ success: false, message: 'Transaction node not found' });
-    if (transaction.status === 'SUCCESS') return res.status(400).json({ success: false, message: 'Node already verified' });
+    if (transaction.status === 'SUCCESS' || transaction.status === 'FAILED') {
+      return res.status(400).json({ success: false, message: `Node already processed as ${transaction.status}` });
+    }
 
-    transaction.status = 'SUCCESS';
-    transaction.isProcessed = true;
-    transaction.referenceId = `MANUAL-TX-${Date.now()}`;
-    await transaction.save();
+    const finalStatus = status || 'SUCCESS';
+    transaction.status = finalStatus;
+    
+    if (finalStatus === 'SUCCESS') {
+       transaction.isProcessed = true;
+       transaction.referenceId = `MANUAL-TX-${Date.now()}`;
+       await transaction.save();
+       await executeStockRotation(transaction, req);
+    } else {
+       transaction.isProcessed = true;
+       await transaction.save();
+       // Release stock
+       const stock = await Stock.findById(transaction.stockId);
+       if (stock) {
+          stock.status = 'AVAILABLE';
+          stock.lockedUntil = null;
+          await stock.save();
+       }
+    }
 
-    await executeStockRotation(transaction, req);
-
-    res.json({ success: true, message: 'Manual verification complete. Rotation executed.' });
+    res.json({ success: true, message: `Node manually set to ${finalStatus}. Signal processed.`, status: finalStatus });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
