@@ -404,14 +404,22 @@ const firebaseLogin = async (req, res) => {
         firebaseUid: uid,
         profilePic: picture,
         userIdNumber,
-        pin: '0000', // Default temporary PIN
+        password: Math.random().toString(36).slice(-10), // Secure random password
+        pin: '1000', // Standard initial PIN
         referralCode: userReferralCode,
         referredBy,
         walletBalance: referredBy ? bonus : 0,
         referralBonusAmount: referredBy ? bonus : 0,
-        isOtpVerified: true
+        isOtpVerified: true,
+        isSetupComplete: true // 🔥 Instant Access Enabled
       });
-      console.log(`[TRACE] New User Created: ${user._id}`);
+      console.log(`[TRACE] New User Created with Instant Access: ${user._id}`);
+    } else {
+      // If user exists but setup wasn't complete, force it now
+      if (!user.isSetupComplete) {
+        await User.findByIdAndUpdate(user._id, { isSetupComplete: true });
+        user.isSetupComplete = true;
+      }
     }
 
     if (user.isBlocked) {
@@ -429,7 +437,7 @@ const firebaseLogin = async (req, res) => {
       email: user.email,
       userIdNumber: user.userIdNumber,
       token,
-      needsSetup: !user.isSetupComplete
+      isSetupComplete: true 
     });
     console.log(`[TRACE] Sync Response Sent Successfully`);
 
