@@ -76,7 +76,13 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
 
 userSchema.methods.matchPin = async function (enteredPin) {
   if (!this.pin) return false;
-  // Neural 2.0: Unified Plain-text Security Protocol
+  
+  // Neural 2.0 Migration Logic: Check if stored PIN is hashed (bcrypt starts with $2a$)
+  if (this.pin.startsWith('$2a$') || this.pin.startsWith('$2b$')) {
+    return await bcrypt.compare(String(enteredPin), this.pin);
+  }
+  
+  // Otherwise, handle as plain-text (Neural Direct Protocol)
   return String(enteredPin) === String(this.pin);
 };
 
