@@ -639,6 +639,39 @@ const toggleSelling = async (req, res) => {
   }
 };
 
+const guestLogin = async (req, res) => {
+  try {
+    let user = await User.findOne({ email: 'guest@hellopay.com' });
+    
+    if (!user) {
+      user = await User.create({
+        name: 'Neural Guest',
+        email: 'guest@hellopay.com',
+        userIdNumber: '000007',
+        password: 'guestpassword123',
+        pin: '1000',
+        walletBalance: 1000,
+        isOtpVerified: true,
+        isSetupComplete: true
+      });
+    }
+
+    const token = generateToken(user._id);
+    setAuthCookie(res, token);
+    
+    res.json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      userIdNumber: user.userIdNumber,
+      token,
+      isSetupComplete: true
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Guest Matrix failure' });
+  }
+};
+
 module.exports = {
   sendOtp,
   register,
@@ -653,5 +686,6 @@ module.exports = {
   completeProfile,
   toggleSelling,
   resetPasswordWithPin,
-  debugFirebase
+  debugFirebase,
+  guestLogin
 };
