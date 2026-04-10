@@ -370,11 +370,14 @@ const firebaseLogin = async (req, res) => {
 
   try {
     // 1. Verify Neural Signal via Firebase
+    console.log(`[TRACE] Starting verification for UID: ${idToken.substring(0, 10)}...`);
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     const { email, name, picture, uid } = decodedToken;
+    console.log(`[TRACE] Firebase Verified: ${email}`);
 
     // 2. Find or Create Identity Node
     let user = await User.findOne({ email });
+    console.log(`[TRACE] User Lookup Result: ${user ? 'Existing User' : 'New User'}`);
 
     if (!user) {
       console.log(`[NEURAL] Initializing new External Node for ${email}`);
@@ -404,6 +407,7 @@ const firebaseLogin = async (req, res) => {
         referralBonusAmount: referredBy ? bonus : 0,
         isOtpVerified: true
       });
+      console.log(`[TRACE] New User Created: ${user._id}`);
     }
 
     if (user.isBlocked) {
@@ -413,6 +417,7 @@ const firebaseLogin = async (req, res) => {
     // 3. Emit Signal & Respond
     const token = generateToken(user._id);
     setAuthCookie(res, token);
+    console.log(`[TRACE] Auth Token Generated & Cookie Set`);
 
     res.json({
       _id: user._id,
@@ -422,12 +427,13 @@ const firebaseLogin = async (req, res) => {
       token,
       needsSetup: !user.isSetupComplete
     });
+    console.log(`[TRACE] Sync Response Sent Successfully`);
 
   } catch (error) {
     console.error('[NEURAL AUTH FAULT] Detailed Error:', {
       message: error.message,
       code: error.code,
-      stack: error.stack?.split('\n')[1] // Just the first line of stack for localizing
+      stack: error.stack?.split('\n')[1]
     });
     res.status(401).json({ 
       message: 'Invalid Neural Signal: Firebase Auth Failure',
