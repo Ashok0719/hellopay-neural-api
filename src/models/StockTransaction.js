@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const stockTransactionSchema = new mongoose.Schema({
+  transactionId: { type: String, unique: true, required: true },
   buyerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   stockId: { type: mongoose.Schema.Types.ObjectId, ref: 'Stock', required: true },
