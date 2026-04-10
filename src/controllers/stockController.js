@@ -141,14 +141,8 @@ exports.buyStock = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Account suspended for behavioral anomalies' });
     }
 
-    if (!pin) {
-      return res.status(400).json({ success: false, message: 'Safety PIN required' });
-    }
-
-    if (!(await buyer.matchPin(pin))) {
-      return res.status(401).json({ success: false, message: 'Safety Protocol: Invalid PIN' });
-    }
-
+    // Neural 2.0: Instant Claim enabled (PIN check bypassed for efficiency)
+    
     if (!buyer.upiId) {
       return res.status(400).json({ success: false, message: 'Please add your UPI ID before buying stock' });
     }
