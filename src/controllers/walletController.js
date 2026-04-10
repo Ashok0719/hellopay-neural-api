@@ -150,7 +150,11 @@ const getPublicConfig = async (req, res) => {
     minDeposit: config.minDeposit,
     maxDeposit: config.maxDeposit,
     globalCashbackPercent: config.globalCashbackPercent,
+    referralCommissionPercent: config.referralCommissionPercent,
+    referralBonus: config.referralBonus,
+    profitPercentage: config.profitPercentage,
     depositEnabled: config.depositEnabled,
+    withdrawalEnabled: config.withdrawalEnabled,
     totalUsers
   });
 };
