@@ -72,8 +72,14 @@ app.use(helmet({
 
 // Step 6: Force COOP & COEP for Google Auth Stability
 app.use((req, res, next) => {
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
   res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  next();
+});
+
+// Neural Traffic Monitor (Debug Mode)
+app.use((req, res, next) => {
+  console.log(`[TRAFFIC] ${req.method} ${req.originalUrl} from ${req.headers.origin || 'Unknown'}`);
   next();
 });
 
