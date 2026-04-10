@@ -233,9 +233,8 @@ exports.buyStock = async (req, res) => {
     stock.selectionExpires = stock.lockedUntil;
     await stock.save();
 
-    // Neural 2.0: Unique Amount Generation (₹+1 to ₹+9) to distinguish P2P signals
-    const uniqueOffset = Math.floor(Math.random() * 9) + 1;
-    const expectedAmount = stock.amount + uniqueOffset;
+    // Neural 2.0: Clean Amount Protocal (Strict 100s multiple as per User Requirement)
+    const expectedAmount = stock.amount;
 
     const transaction = await StockTransaction.create({
       transactionId: 'TXN' + Date.now() + Math.floor(Math.random() * 1000),
