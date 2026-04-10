@@ -436,6 +436,21 @@ const firebaseLogin = async (req, res) => {
   }
 };
 
+const debugFirebase = async (req, res) => {
+  const admin = require('../config/firebase');
+  try {
+    const status = {
+      initialized: admin.apps.length > 0,
+      apps: admin.apps.map(a => a.name),
+      project: admin.apps.length > 0 ? admin.app().options.credential : 'none',
+      timestamp: new Date().toISOString()
+    };
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+};
+
 // @desc    Change user PIN with old PIN verification
 // @route   POST /api/auth/change-pin
 // @access  Private

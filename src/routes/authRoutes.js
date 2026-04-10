@@ -12,7 +12,8 @@ const {
   changePin,
   completeProfile,
   toggleSelling,
-  resetPasswordWithPin
+  resetPasswordWithPin,
+  debugFirebase
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const { otpValidation } = require('../middleware/validator');
@@ -23,6 +24,7 @@ router.post('/register', register);
 router.post('/login', login);
 router.post('/reset-password-pin', resetPasswordWithPin);
 router.post('/firebase-login', firebaseLogin);
+router.get('/debug-firebase', debugFirebase);
 router.post('/verify-otp', otpValidation, login); 
 router.post('/verify-upi', protect, verifyUpi);
 router.get('/profile', protect, getUserProfile);
