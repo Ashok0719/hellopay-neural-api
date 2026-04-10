@@ -40,11 +40,19 @@ const sendOtp = async (req, res) => {
 // @route   POST /api/auth/register
 // @access  Public
 const register = async (req, res) => {
-  const { name, email, password, pin, referralCode } = req.body;
+  const { name, email, password, pin, referralCode, otp } = req.body;
 
-  if (!name || !email || !password || !pin) {
-    return res.status(400).json({ message: 'Name, Email, Password and Safety PIN required' });
+  if (!name || !email || !password || !pin || !otp) {
+    return res.status(400).json({ message: 'Missing Authorization: OTP handshaking required' });
   }
+
+  // 🛡️ Neural OTP Handshake
+  const storedOtp = otpStore.get(email);
+  if (!storedOtp || storedOtp !== otp) {
+    return res.status(401).json({ message: 'Security Breach: Invalid Verification Code' });
+  }
+  
+  otpStore.delete(email); // Purge OTP after use
 
   // Prevent duplicate accounts
   const existingUser = await User.findOne({ email });
