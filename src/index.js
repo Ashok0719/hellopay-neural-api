@@ -121,7 +121,7 @@ const { upload }  = require('./middleware/uploadMiddleware');
 app.post('/api/save-upi', protect, upload.single('qrCode'), saveUpi);
 
 app.get('/', (req, res) => res.send('HelloPay Neural API - Online'));
-app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 app.use(errorHandler);
 
