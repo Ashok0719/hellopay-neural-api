@@ -144,10 +144,21 @@ const deleteUser = async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ message: 'User Node Not Found' });
 
-    // Atomic Cleanup: Stocks & Transactions (Non-blocking fault tolerance)
+    // Atomic Cleanup: Assets & History (Non-blocking fault tolerance)
     try { await Stock.deleteMany({ ownerId: id }); } catch (e) {}
     try { await StockTransaction.deleteMany({ $or: [{ buyerId: id }, { sellerId: id }] }); } catch (e) {}
     try { await Transaction.deleteMany({ $or: [{ senderId: id }, { receiverId: id }] }); } catch (e) {}
+    
+    // Neural Wipe: Extended Data
+    const FraudLog = require('../models/FraudLog');
+    const WalletLog = require('../models/WalletLog');
+    const Payment = require('../models/Payment');
+    const Recharge = require('../models/Recharge');
+    
+    try { await FraudLog.deleteMany({ userId: id }); } catch (e) {}
+    try { await WalletLog.deleteMany({ userId: id }); } catch (e) {}
+    try { await Payment.deleteMany({ userId: id }); } catch (e) {}
+    try { await Recharge.deleteMany({ userId: id }); } catch (e) {}
     
     await user.deleteOne();
 
