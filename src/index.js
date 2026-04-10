@@ -6,6 +6,7 @@ if (dns.setServers) {
 }
 
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
 const morgan = require('morgan');
 const helmet = require('helmet');
@@ -19,42 +20,28 @@ const transactionRoutes = require('./routes/transactionRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const listingRoutes = require('./routes/listingRoutes');
 const { errorHandler } = require('./middleware/errorMiddleware');
+const connectDB = require('./config/db');
 const dotenv = require('dotenv');
 
 dotenv.config();
-
-const admin = require('./config/firebase');
-
-// Neural Core Sync: Check System Configuration in Firebase RTDB
-const Config = require('./models/Config');
-(async () => {
-  try {
-    const existingConfig = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-    if (!existingConfig) {
-      console.log('[NEURAL] Initializing Base Configuration in Firebase RTDB...');
-      await Config.create({
-        key: 'SYSTEM_CONFIG',
-        stockPlans: [
-          { amount: 1000, code: 'SIG1000', isActive: true },
-          { amount: 5000, code: 'SIG5000', isActive: true }
-        ],
-        globalCashbackPercent: 4,
-        profitPercentage: 4,
-        adminProfitEnabled: true,
-        depositEnabled: true,
-        withdrawalEnabled: true
-      });
-    } else {
-      console.log('[NEURAL] Configuration Signal Detected in Firebase RTDB');
-    }
-  } catch (err) {
-    console.warn('[NEURAL ERROR] Failed to initialize Config in Firebase RTDB:', err.message);
+connectDB().then(async () => {
+  const Config = require('./models/Config');
+  const existingConfig = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+  if (!existingConfig) {
+    console.log('Initializing Neural Base Configuration...');
+    await Config.create({
+      key: 'SYSTEM_CONFIG',
+      stockPlans: [
+        { amount: 1000, code: 'SIG1000', isActive: true },
+        { amount: 5000, code: 'SIG5000', isActive: true }
+      ],
+      globalCashbackPercent: 4,
+      profitPercentage: 4
+    });
   }
-})();
+});
 
 const app = express();
-app.set('trust proxy', 1); // Trust Render's proxy for Rate Limiting
-
 const server = require('http').createServer(app);
 const io = new Server(server, {
   cors: { 
@@ -65,27 +52,30 @@ const io = new Server(server, {
   }
 });
 
+// HelloPay Neural Core Init
+console.log('--- HelloPay Neural Base Initializing ---');
 app.use(helmet({
   contentSecurityPolicy: false,
-  crossOriginOpenerPolicy: false, 
 })); 
-
-// Reset COOP to defaults to prevent browser sync-blocking
-app.use((req, res, next) => {
-  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
-  next();
-});
-
-// Neural Traffic Monitor (Debug Mode)
-app.use((req, res, next) => {
-  console.log(`[TRAFFIC] ${req.method} ${req.originalUrl} from ${req.headers.origin || 'Unknown'}`);
-  next();
-});
-
 app.use(morgan('dev'));
 
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim())
+  : ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5000', '*'];
+
 app.use(cors({
-  origin: "https://hellopay-userweb.vercel.app",
+  origin: (origin, callback) => {
+    // Allow neural core, mobile nodes, and local development
+    if (!origin || process.env.NODE_ENV !== 'production') return callback(null, true);
+
+    // Auto-authorize all HelloPay Vercel and Tunnel subdomains
+    const isAllowedTunnel = origin.includes('.loca.lt') || origin.includes('.vercel.app') || origin.includes('api.hellopayapp.com');
+    
+    if (allowedOrigins.includes(origin) || isAllowedTunnel) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS: Node [${origin}] not in Allowed Spectrum`), false);
+  },
   credentials: true
 }));
 app.use(express.json());
@@ -104,7 +94,7 @@ const adminLimiter = rateLimit({
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 2000, // Increased capacity to prevent sync blocking
+  max: 500, // Standard protection for Public API
 });
 
 app.use('/api/admin', adminLimiter);
@@ -119,12 +109,6 @@ const { protect } = require('./middleware/authMiddleware');
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/admin', adminRoutes);
-
-// Neural Health Route
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'UP', neural_sync: 'ACTIVE' });
-});
-
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/recharge', require('./routes/rechargeRoutes'));
 app.use('/api/listings', listingRoutes);

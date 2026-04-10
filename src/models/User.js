@@ -1,58 +1,86 @@
-const FirebaseShim = require('../utils/FirebaseShim');
+const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const UserShim = new FirebaseShim('users');
-
-const User = UserShim; // Base all standard methods on the Shim
-
-// Add custom overrides and extensions
-User.create = async function(data) {
-  const payload = { ...data };
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  phone: { type: String, unique: true, sparse: true },
+  email: { type: String, unique: true, sparse: true },
+  firebaseUid: { type: String, unique: true, sparse: true },
+  profilePic: { type: String },
+  password: { type: String }, 
+  isOtpVerified: { type: Boolean, default: false },
+  verifiedUpiId: { type: String },
+  isSeller: { type: Boolean, default: false },
+  userIdNumber: { type: Number, unique: true },
+  walletBalance: { type: Number, default: 0 },
+  rewardBalance: { type: Number, default: 0 },
+  totalDeposited: { type: Number, default: 0 },
+  totalWithdrawn: { type: Number, default: 0 },
+  totalRewards: { type: Number, default: 0 },
+  role: { type: String, enum: ['user', 'admin'], default: 'user' },
+  isBlocked: { type: Boolean, default: false },
+  referralCode: { type: String, unique: true, sparse: true },
+  referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  referralEarnings: { type: Number, default: 0 },
+  referralCount: { type: Number, default: 0 },
+  referralBonusAmount: { type: Number, default: 0 }, // ₹100 sign-up bonus, locked until deposit
+  upiId: { type: String, unique: true, sparse: true }, // Ensured one UPI per global node
+  isUpiVerified: { type: Boolean, default: false },
+  upiModifiedAt: { type: Date },
+  pin: { type: String, minlength: 4 },
+  qrCode: { type: String },
+  fraudScore: { type: Number, default: 0 },
+  lastIp: { type: String },
+  isSetupComplete: { type: Boolean, default: false },
   
-  if (!payload.userIdNumber) {
-    payload.userIdNumber = Math.floor(100000 + Math.random() * 900000).toString();
-  }
-  if (!payload.referralCode) {
-    payload.referralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
-  }
-  if (payload.password) {
-    const salt = await bcrypt.genSalt(10);
-    payload.password = await bcrypt.hash(payload.password, salt);
-  }
-  if (payload.pin) {
-    const salt = await bcrypt.genSalt(10);
-    payload.pin = await bcrypt.hash(payload.pin, salt);
-  }
+  // Task Registry Telemetry
+  dailyDepositAmount: { type: Number, default: 0 },
+  weeklyDepositAmount: { type: Number, default: 0 },
+  monthlyDepositAmount: { type: Number, default: 0 },
+  dailyTaskGoal: { type: Number, default: 5000 },
+  weeklyTaskGoal: { type: Number, default: 15000 },
+  monthlyTaskGoal: { type: Number, default: 50000 },
+  lastDailyClaimAt: { type: Date },
+  lastWeeklyClaimAt: { type: Date },
+  lastMonthlyClaimAt: { type: Date },
+  taskLastUpdated: { type: Date },
+  lastActive: { type: Date, default: Date.now },
   
-  return UserShim.create(payload);
+  // Custom Profit Levels (Neural Overrides)
+  referralPercent: { type: Number, default: 4 }, // Individual override, defaults to current global
+  profitPercent: { type: Number, default: 8 },   // Individual override, defaults to current global
+  isOpenSelling: { type: Boolean, default: false }, // Neural marketplace toggle
+}, { timestamps: true });
+
+userSchema.pre('save', async function () {
+  if (!this.userIdNumber) {
+    this.userIdNumber = Math.floor(100000 + Math.random() * 900000);
+  }
+
+  if (!this.referralCode) {
+    this.referralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+  }
+
+  if (this.password && this.isModified('password')) {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+  }
+
+  if (this.pin && this.isModified('pin')) {
+    const salt = await bcrypt.genSalt(10);
+    this.pin = await bcrypt.hash(this.pin, salt);
+  }
+});
+
+userSchema.methods.matchPassword = async function (enteredPassword) {
+  if (!this.password) return false;
+  return await bcrypt.compare(enteredPassword, this.password);
 };
 
-User.findByIdAndUpdate = async function(id, update, options = {}) {
-  const payload = { ...update };
-  
-  if (payload.password) {
-    const salt = await bcrypt.genSalt(10);
-    payload.password = await bcrypt.hash(payload.password, salt);
-  }
-  if (payload.pin) {
-    const salt = await bcrypt.genSalt(10);
-    payload.pin = await bcrypt.hash(payload.pin, salt);
-  }
-  
-  return UserShim.findByIdAndUpdate(id, payload, options);
+userSchema.methods.matchPin = async function (enteredPin) {
+  if (!this.pin) return false;
+  return await bcrypt.compare(enteredPin, this.pin);
 };
 
-// Helper methods
-User.matchPassword = async function(user, enteredPassword) {
-  if (!user || !user.password) return false;
-  return await bcrypt.compare(enteredPassword, user.password);
-};
-
-User.matchPin = async function(user, enteredPin) {
-  if (!user || !user.pin || !enteredPin) return false;
-  // Handle plaintext PINs if needed, or just bcrypt
-  if (enteredPin === user.pin) return true;
-  return await bcrypt.compare(enteredPin, user.pin);
-};
-
+const User = mongoose.model('User', userSchema);
 module.exports = User;

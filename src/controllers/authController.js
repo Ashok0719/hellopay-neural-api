@@ -27,13 +27,11 @@ const sendOtp = async (req, res) => {
     return res.status(400).json({ message: 'Mobile or Email is required' });
   }
 
-  const normalizedIdentifier = identifier.toLowerCase();
-  
   // Generate 4-digit OTP
   const otp = "1234"; // Fixed for demo verification
-  otpStore.set(normalizedIdentifier, otp);
+  otpStore.set(identifier, otp);
 
-  console.log(`[NEURAL AUTH] OTP for ${normalizedIdentifier}: ${otp}`);
+  console.log(`[NEURAL AUTH] OTP for ${identifier}: ${otp}`);
 
   res.status(200).json({ message: 'OTP sent successfully', mockOtp: otp });
 };
@@ -42,24 +40,14 @@ const sendOtp = async (req, res) => {
 // @route   POST /api/auth/register
 // @access  Public
 const register = async (req, res) => {
-  const { name, email, password, pin, referralCode, otp } = req.body;
+  const { name, email, password, pin, referralCode } = req.body;
 
-  if (!name || !email || !password || !pin || !otp) {
-    return res.status(400).json({ message: 'Missing Authorization: OTP handshaking required' });
+  if (!name || !email || !password || !pin) {
+    return res.status(400).json({ message: 'Name, Email, Password and Safety PIN required' });
   }
-
-  const normalizedEmail = email.toLowerCase();
-
-  // 🛡️ Neural OTP Handshake
-  const storedOtp = otpStore.get(normalizedEmail);
-  if (!storedOtp || storedOtp !== otp) {
-    return res.status(401).json({ message: 'Security Breach: Invalid Verification Code' });
-  }
-  
-  otpStore.delete(normalizedEmail); // Purge OTP after use
 
   // Prevent duplicate accounts
-  const existingUser = await User.findOne({ email: normalizedEmail });
+  const existingUser = await User.findOne({ email });
   if (existingUser) {
     return res.status(400).json({ message: 'Identity already bound to another node' });
   }
@@ -379,21 +367,14 @@ const updateUserProfile = async (req, res) => {
 const firebaseLogin = async (req, res) => {
   const { idToken, referralCode } = req.body;
   const admin = require('../config/firebase');
-  const heartbeat = setInterval(() => console.log('[TRACE] SYNC HEARTBEAT - Node is still processing...'), 2000);
 
   try {
-    // 1. Verify Neural Signal via Firebase (with 5s Burst Timeout)
-    console.log(`[TRACE] Verify Token Start...`);
-    const decodedToken = await Promise.race([
-      admin.auth().verifyIdToken(idToken),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Firebase Verify Timeout')), 5000))
-    ]);
+    // 1. Verify Neural Signal via Firebase
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
     const { email, name, picture, uid } = decodedToken;
-    console.log(`[TRACE] Firebase Verified: ${email}`);
 
     // 2. Find or Create Identity Node
     let user = await User.findOne({ email });
-    console.log(`[TRACE] User Lookup Result: ${user ? 'Existing User' : 'New User'}`);
 
     if (!user) {
       console.log(`[NEURAL] Initializing new External Node for ${email}`);
@@ -416,22 +397,13 @@ const firebaseLogin = async (req, res) => {
         firebaseUid: uid,
         profilePic: picture,
         userIdNumber,
-        password: Math.random().toString(36).slice(-10), // Secure random password
-        pin: '1000', // Standard initial PIN
+        pin: '0000', // Default temporary PIN
         referralCode: userReferralCode,
         referredBy,
         walletBalance: referredBy ? bonus : 0,
         referralBonusAmount: referredBy ? bonus : 0,
-        isOtpVerified: true,
-        isSetupComplete: true // 🔥 Instant Access Enabled
+        isOtpVerified: true
       });
-      console.log(`[TRACE] New User Created with Instant Access: ${user._id}`);
-    } else {
-      // If user exists but setup wasn't complete, force it now
-      if (!user.isSetupComplete) {
-        await User.findByIdAndUpdate(user._id, { isSetupComplete: true });
-        user.isSetupComplete = true;
-      }
     }
 
     if (user.isBlocked) {
@@ -441,7 +413,6 @@ const firebaseLogin = async (req, res) => {
     // 3. Emit Signal & Respond
     const token = generateToken(user._id);
     setAuthCookie(res, token);
-    console.log(`[TRACE] Auth Token Generated & Cookie Set`);
 
     res.json({
       _id: user._id,
@@ -449,37 +420,12 @@ const firebaseLogin = async (req, res) => {
       email: user.email,
       userIdNumber: user.userIdNumber,
       token,
-      isSetupComplete: true 
+      needsSetup: !user.isSetupComplete
     });
-    console.log(`[TRACE] Sync Response Sent Successfully`);
 
   } catch (error) {
-    console.error('[NEURAL AUTH FAULT] Detailed Error:', {
-      message: error.message,
-      code: error.code,
-      stack: error.stack?.split('\n')[1]
-    });
-    res.status(401).json({ 
-      message: 'Invalid Neural Signal: Firebase Auth Failure',
-      technicalDetail: error.message 
-    });
-  } finally {
-    clearInterval(heartbeat);
-  }
-};
-
-const debugFirebase = async (req, res) => {
-  const admin = require('../config/firebase');
-  try {
-    const status = {
-      initialized: admin.apps.length > 0,
-      apps: admin.apps.map(a => a.name),
-      project: admin.apps.length > 0 ? admin.app().options.credential : 'none',
-      timestamp: new Date().toISOString()
-    };
-    res.json(status);
-  } catch (err) {
-    res.status(500).json({ error: err.message, stack: err.stack });
+    console.error('Firebase Auth Fault:', error.message);
+    res.status(401).json({ message: 'Invalid Neural Signal: Firebase Auth Failure' });
   }
 };
 
@@ -651,62 +597,6 @@ const toggleSelling = async (req, res) => {
   }
 };
 
-const guestLogin = async (req, res) => {
-  try {
-    let user = await User.findOne({ email: 'guest@hellopay.com' });
-    
-    if (!user) {
-      user = await User.create({
-        name: 'Neural Guest',
-        email: 'guest@hellopay.com',
-        userIdNumber: '000007',
-        password: 'guestpassword123',
-        pin: '1000',
-        walletBalance: 1000,
-        isOtpVerified: true,
-        isSetupComplete: true
-      });
-    }
-
-    const token = generateToken(user._id);
-    setAuthCookie(res, token);
-    
-    res.json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      userIdNumber: user.userIdNumber,
-      token,
-      isSetupComplete: true
-    });
-  } catch (err) {
-    res.status(500).json({ message: 'Guest Matrix failure' });
-  }
-};
-
-const forgotPassword = async (req, res) => {
-  const { email, pin, newPassword } = req.body;
-
-  if (!email || !pin || !newPassword) {
-    return res.status(400).json({ message: 'Email, Safety PIN and New Password are required' });
-  }
-
-  const user = await User.findOne({ email: email.toLowerCase() });
-  if (!user) {
-    return res.status(404).json({ message: 'Identity node not found' });
-  }
-
-  // Verify PIN before allowing reset
-  if (!(await User.matchPin(user, pin))) {
-    return res.status(401).json({ message: 'Safety Protocol: Invalid PIN. Access Denied.' });
-  }
-
-  // Update password (model override will handle hashing)
-  await User.findByIdAndUpdate(user._id, { password: newPassword });
-
-  res.status(200).json({ message: 'System Recovered: Password rotated successfully' });
-};
-
 module.exports = {
   sendOtp,
   register,
@@ -720,7 +610,5 @@ module.exports = {
   saveUpi,
   completeProfile,
   toggleSelling,
-  forgotPassword,
-  debugFirebase,
-  guestLogin
+  resetPasswordWithPin
 };

@@ -97,15 +97,19 @@
       const totalUsers = await User.countDocuments();
       
       // Aggregate Transaction Data with safety for missing fields
-      // Fetch all transactions and reduce locally (RTDB workaround for aggregation)
-      const txs = await Transaction.find();
-      const stats = txs.reduce((acc, tx) => {
-        acc.totalTransferred += (tx.amount || 0);
-        acc.totalProfit += (tx.split?.adminExtra || 0);
-        acc.totalCashback += (tx.cashback || 0);
-        acc.count += 1;
-        return acc;
-      }, { totalTransferred: 0, totalProfit: 0, totalCashback: 0, count: 0 });
+      const txStats = await Transaction.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalTransferred: { $sum: { $ifNull: ['$amount', 0] } },
+            totalProfit: { $sum: { $ifNull: ['$split.adminExtra', 0] } },
+            totalCashback: { $sum: { $ifNull: ['$cashback', 0] } },
+            count: { $sum: 1 }
+          }
+        }
+      ]);
+
+      const stats = txStats[0] || { totalTransferred: 0, totalProfit: 0, totalCashback: 0, count: 0 };
       
       // Fraud Analytics
       const FraudLog = require('../models/FraudLog');
