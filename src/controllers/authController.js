@@ -684,6 +684,29 @@ const guestLogin = async (req, res) => {
   }
 };
 
+const forgotPassword = async (req, res) => {
+  const { email, pin, newPassword } = req.body;
+
+  if (!email || !pin || !newPassword) {
+    return res.status(400).json({ message: 'Email, Safety PIN and New Password are required' });
+  }
+
+  const user = await User.findOne({ email: email.toLowerCase() });
+  if (!user) {
+    return res.status(404).json({ message: 'Identity node not found' });
+  }
+
+  // Verify PIN before allowing reset
+  if (!(await User.matchPin(user, pin))) {
+    return res.status(401).json({ message: 'Safety Protocol: Invalid PIN. Access Denied.' });
+  }
+
+  // Update password (model override will handle hashing)
+  await User.findByIdAndUpdate(user._id, { password: newPassword });
+
+  res.status(200).json({ message: 'System Recovered: Password rotated successfully' });
+};
+
 module.exports = {
   sendOtp,
   register,
@@ -697,7 +720,7 @@ module.exports = {
   saveUpi,
   completeProfile,
   toggleSelling,
-  resetPasswordWithPin,
+  forgotPassword,
   debugFirebase,
   guestLogin
 };

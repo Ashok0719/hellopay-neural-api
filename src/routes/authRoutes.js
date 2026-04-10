@@ -12,9 +12,9 @@ const {
   changePin,
   completeProfile,
   toggleSelling,
-  resetPasswordWithPin,
   debugFirebase,
-  guestLogin
+  guestLogin,
+  forgotPassword
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const { otpValidation } = require('../middleware/validator');
@@ -23,7 +23,7 @@ const { upload } = require('../middleware/uploadMiddleware');
 router.post('/send-otp', sendOtp);
 router.post('/register', register);
 router.post('/login', login);
-router.post('/reset-password-pin', resetPasswordWithPin);
+router.post('/reset-password-pin', forgotPassword);
 router.post('/firebase-login', firebaseLogin);
 router.post('/guest-login', guestLogin);
 router.get('/debug-firebase', debugFirebase);
