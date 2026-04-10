@@ -303,6 +303,11 @@ exports.createStockOrder = async (req, res) => {
 const crypto = require('crypto');
 const fs = require('fs');
 
+const cleanUTR = (str) => {
+  if (!str) return '';
+  return str.toString().replace(/[^a-zA-Z0-9]/g, '').toUpperCase().trim();
+};
+
 /* ─────────────────────────────────────────────────────────────
    POST /api/stocks/transactions/:id/upload
    Enhanced AI OCR verification system for HelloPay Neural 2.0
@@ -417,11 +422,30 @@ exports.uploadPaymentScreenshot = async (req, res) => {
         }
       }
 
-      // UPI Identity Extraction
+      // 5.2 UPI Identity Extraction
       const sellerUpiId = (transaction.sellerId?.upiId || '').toUpperCase();
       if (sellerUpiId && text.includes(sellerUpiId)) {
          upiMatch = true;
          extractedData.extractedReceiver = sellerUpiId;
+      }
+
+      // 5.3 UTR Extraction from Screenshot
+      // Logic: Look for 12-digit number or specific labels
+      const utrRegex = /(\d{12})|([A-Z0-9]{10,18})/g;
+      const utrMatches = text.match(utrRegex);
+      if (utrMatches) {
+        for (const match of utrMatches) {
+          const cleanedOCR = cleanUTR(match);
+          const cleanedUser = cleanUTR(utr);
+          if (cleanedOCR === cleanedUser || cleanedOCR.includes(cleanedUser) || cleanedUser.includes(cleanedOCR)) {
+             extractedData.extractedUtr = match;
+             extractedData.utrMatch = true;
+             break;
+          }
+        }
+        if (!extractedData.extractedUtr && utrMatches.length > 0) {
+           extractedData.extractedUtr = utrMatches[0]; // Take best guess if no match
+        }
       }
 
       // Visual Status Extraction
@@ -436,36 +460,51 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     }
 
     // ── 6. FINAL TIERED DECISION MATRIX ──
-    // Rule: UTR Format is already checked at start.
     const utrValid = isUtrFormatValid && !existingTxByUtr;
+    const utrMatch = extractedData.utrMatch === true;
     
     transaction.utr = utr.trim();
-    transaction.ocrData = { ...extractedData, flagReasons };
+    transaction.ocrData = { ...extractedData, flagReasons, utrMatch };
     transaction.imageHash = imageHash;
     transaction.screenshot = '/uploads/' + file.filename;
 
-    if (utrValid && amountMatch && upiMatch) {
-       // PLATINUM MATCH: AUTO-SETTLE
+    if (utrMatch && amountMatch) {
+       // TIER 1: HIGH CONFIDENCE CONSENSUS
        transaction.status = 'SUCCESS';
        transaction.confidenceScore = 100;
        transaction.isProcessed = true;
-       transaction.referenceId = `AUTO-TX-${Date.now()}`;
+       transaction.referenceId = `UTR-MATCH-${Date.now()}`;
        await transaction.save();
        await executeStockRotation(transaction, req);
-       return res.json({ success: true, message: 'Payment auto-verified successfully via Neural OCR.', status: 'SUCCESS' });
+       return res.json({ success: true, message: 'Payment auto-verified: UTR and Amount match established.', status: 'SUCCESS' });
+    } else if (utrMatch) {
+       // TIER 2: UTR MATCH BUT AMOUNT FAULT
+       transaction.status = 'PENDING_VERIFICATION';
+       transaction.confidenceScore = 85;
+       await transaction.save();
+       return res.json({ success: true, message: 'UTR matched perfectly. Identity verification in progress for amount sync...', status: 'PENDING_VERIFICATION' });
+    } else if (utrValid && amountMatch && upiMatch) {
+       // TIER 3: HYBRID VALIDATION
+       transaction.status = 'SUCCESS';
+       transaction.confidenceScore = 95;
+       transaction.isProcessed = true;
+       transaction.referenceId = `HYBRID-MATCH-${Date.now()}`;
+       await transaction.save();
+       await executeStockRotation(transaction, req);
+       return res.json({ success: true, message: 'Payment auto-verified via Hybrid consensus logic.', status: 'SUCCESS' });
     } else if (utrValid && amountMatch) {
-       // GOLD MATCH: UTR & AMOUNT MATCH, BUT UPI NOT DETECTED -> PENDING VERIFICATION
+       // TIER 4: PENDING REVIEW (FALLBACK)
        transaction.status = 'PENDING_VERIFICATION';
        transaction.confidenceScore = 75;
        await transaction.save();
-       return res.json({ success: true, message: 'UTR and Amount matched. Awaiting final identity validation...', status: 'PENDING_VERIFICATION' });
+       return res.json({ success: true, message: 'UTR and Amount matched, but identity signal is weak. Awaiting manual sync.', status: 'PENDING_VERIFICATION' });
     } else {
        // SYSTEM FAULT: MISMATCH DETECTED
        transaction.status = 'FAILED';
        transaction.confidenceScore = 30;
        await transaction.save();
 
-       // Release stock node since signal is invalid
+       // Release stock node
        const stock = await Stock.findById(transaction.stockId);
        if (stock) {
          stock.status = 'AVAILABLE';
@@ -475,7 +514,7 @@ exports.uploadPaymentScreenshot = async (req, res) => {
        
        return res.status(400).json({ 
          success: false, 
-         message: 'Verification Failed: Amount or UTR mismatch detected.', 
+         message: 'Verification Failed: Neural signals do not align.', 
          status: 'FAILED' 
        });
     }
