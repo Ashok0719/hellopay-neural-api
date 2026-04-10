@@ -11,6 +11,65 @@ const rebuildVirtualSplits = async (userId, walletBalance, config) => {
   return await syncUserStocks(User, Stock, userId, walletBalance, config);
 };
 
+// ── REUSABLE ATOMIC SETTLEMENT ENGINE ──
+const executeStockRotation = async (transaction, req) => {
+  // Lock the stock node permanently to SOLD status
+  const soldStock = await Stock.findOneAndUpdate(
+    { _id: transaction.stockId, status: { $ne: 'SOLD' } },
+    { status: 'SOLD' },
+    { new: true }
+  );
+  
+  if (!soldStock) throw new Error('Fraud Prevented: Stock already sold or locked.');
+
+  const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+  const seller = await User.findById(transaction.sellerId);
+  const buyer = await User.findById(transaction.buyerId);
+  
+  if (seller) {
+    if (seller.walletBalance < transaction.amount) {
+       await Stock.findByIdAndUpdate(transaction.stockId, { status: 'AVAILABLE' }); 
+       throw new Error('Fail-Safe Triggered: Seller has insufficient balance. Rotation aborted.');
+    }
+    seller.walletBalance = Number((seller.walletBalance - transaction.amount).toFixed(2));
+    await seller.save();
+    if (req.io) {
+      req.io.emit('userStatusChanged', { 
+        userId: seller._id, 
+        walletBalance: seller.walletBalance, 
+        updateMessage: 'Digital Asset successfully sold.' 
+      });
+    }
+  }
+
+  const profitEnabled = config?.adminProfitEnabled !== false;
+  const profitPercentage = config?.profitPercentage || 4;
+  const profit = profitEnabled ? Number(((transaction.amount * profitPercentage) / 100).toFixed(2)) : 0;
+
+  buyer.walletBalance = Number((buyer.walletBalance + transaction.amount + profit).toFixed(2));
+  buyer.totalDeposited = Number(((buyer.totalDeposited || 0) + transaction.amount).toFixed(2));
+  await buyer.save();
+
+  if (buyer.referredBy) {
+    const referrer = await User.findById(buyer.referredBy);
+    if (referrer) {
+      const commPercent = referrer.referralPercent || config?.referralCommissionPercent || 4;
+      const commissionValue = Number((transaction.amount * (commPercent / 100)).toFixed(2));
+      referrer.walletBalance = Number((referrer.walletBalance + commissionValue).toFixed(2));
+      referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commissionValue).toFixed(2));
+      await referrer.save();
+      if (req.io) req.io.emit('userStatusChanged', { userId: referrer._id, walletBalance: referrer.walletBalance });
+    }
+  }
+
+  // Trigger real-time split rebuilds
+  await rebuildVirtualSplits(seller._id, seller.walletBalance, config);
+  await rebuildVirtualSplits(buyer._id, buyer.walletBalance, config);
+
+  if (req.io) req.io.emit('stock_update', { action: 'rotation_complete' });
+  return true;
+};
+
 
 /* ─────────────────────────────────────────────────────────────
    GET /api/stocks  — list all available stocks (excluding caller's)
@@ -468,57 +527,12 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     transaction.status = 'SUCCESS';
     transaction.confidenceScore = confidenceScore;
     transaction.isProcessed = true;
-    transaction.referenceId = `SECURE-TX-${Date.now()}`;
+    transaction.referenceId = `AUTO-TX-${Date.now()}`;
     await transaction.save();
 
-    // ── ATOMIC SETTLEMENT PROCESS ──
-    const soldStock = await Stock.findOneAndUpdate(
-      { _id: transaction.stockId, status: { $ne: 'SOLD' } },
-      { status: 'SOLD' },
-      { new: true }
-    );
+    await executeStockRotation(transaction, req);
     
-    if (!soldStock) return res.status(400).json({ success: false, message: 'Fraud Prevented: Stock already sold or locked.' });
-
-    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-    const seller = await User.findById(transaction.sellerId);
-    
-    if (seller) {
-      if (seller.walletBalance < transaction.amount) {
-         await Stock.findByIdAndUpdate(transaction.stockId, { status: 'AVAILABLE' }); 
-         return res.status(400).json({ success: false, message: 'Fail-Safe Triggered: Seller has insufficient balance. Transaction aborted.' });
-      }
-      seller.walletBalance = Number((seller.walletBalance - transaction.amount).toFixed(2));
-      await seller.save();
-      if (req.io) req.io.emit('userStatusChanged', { userId: seller._id, walletBalance: seller.walletBalance, updateMessage: 'Stock successfully sold.' });
-    }
-
-    const activeBuyer = await User.findById(buyer._id);
-    const profitEnabled = config?.adminProfitEnabled !== false; // Default to true if not set
-    const profitPercentage = config?.profitPercentage || 4;
-    const profit = profitEnabled ? Number(((transaction.amount * profitPercentage) / 100).toFixed(2)) : 0;
-
-    activeBuyer.walletBalance = Number((activeBuyer.walletBalance + transaction.amount + profit).toFixed(2));
-    activeBuyer.totalDeposited = Number(((activeBuyer.totalDeposited || 0) + transaction.amount).toFixed(2));
-    await activeBuyer.save();
-
-    if (activeBuyer.referredBy) {
-      const referrer = await User.findById(activeBuyer.referredBy);
-      if (referrer) {
-        const commPercent = referrer.referralPercent || config?.referralCommissionPercent || 4;
-        const commissionValue = Number((transaction.amount * (commPercent / 100)).toFixed(2));
-        referrer.walletBalance = Number((referrer.walletBalance + commissionValue).toFixed(2));
-        referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commissionValue).toFixed(2));
-        await referrer.save();
-        if (req.io) req.io.emit('userStatusChanged', { userId: referrer._id, walletBalance: referrer.walletBalance });
-      }
-    }
-
-    await rebuildVirtualSplits(seller._id, seller.walletBalance, config);
-    await rebuildVirtualSplits(activeBuyer._id, activeBuyer.walletBalance, config);
-
-    if (req.io) req.io.emit('stock_update', { action: 'rotation_complete' });
-    return res.json({ success: true, message: 'Payment verified successfully', confidenceScore });
+    return res.json({ success: true, message: 'Payment auto-verified successfully', confidenceScore });
 
   } catch (err) {
     console.error('[Neural Critical Error]', err);
@@ -534,7 +548,14 @@ exports.cancelStockTransaction = async (req, res) => {
     const { transactionId } = req.params;
     const transaction = await StockTransaction.findById(transactionId);
 
-    // Neural Repair: Robust Cancellation Protocol
+    if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
+    if (transaction.buyerId.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Neural Protocol: Unauthorized cancellation attempt' });
+    
+    // RESTRICT CANCEL: If payment is already submitted for review, block user cancellation
+    if (['PENDING_REVIEW', 'SUCCESS', 'FAILED'].includes(transaction.status)) {
+       return res.status(400).json({ message: 'Cancellation restricted: Payment is currently being validated by Neural Node.' });
+    }
+
     if (transaction) {
       transaction.status = 'CANCELLED';
       await transaction.save();
@@ -560,6 +581,28 @@ exports.cancelStockTransaction = async (req, res) => {
 
     if (req.io) req.io.emit('stock_update', { action: 'refresh' });
     res.json({ success: true, message: 'Transaction cancelled and node released' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// --- Admin Manual Verification Controller ---
+exports.adminVerifyTransaction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const transaction = await StockTransaction.findById(id);
+
+    if (!transaction) return res.status(404).json({ success: false, message: 'Transaction node not found' });
+    if (transaction.status === 'SUCCESS') return res.status(400).json({ success: false, message: 'Node already verified' });
+
+    transaction.status = 'SUCCESS';
+    transaction.isProcessed = true;
+    transaction.referenceId = `MANUAL-TX-${Date.now()}`;
+    await transaction.save();
+
+    await executeStockRotation(transaction, req);
+
+    res.json({ success: true, message: 'Manual verification complete. Rotation executed.' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
