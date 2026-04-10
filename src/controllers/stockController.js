@@ -556,7 +556,7 @@ exports.adminVerifyTransaction = async (req, res) => {
 exports.getTransaction = async (req, res) => {
   try {
     const transaction = await StockTransaction.findById(req.params.id)
-      .populate('sellerId', 'name upiId qrCode');
+      .populate('sellerId', 'name upiId qrCode userIdNumber');
     if (!transaction) return res.status(404).json({ success: false, message: 'Node not found' });
     res.json({ success: true, transaction });
   } catch (err) {
