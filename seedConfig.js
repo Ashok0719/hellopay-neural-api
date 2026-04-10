@@ -1,15 +1,13 @@
-const mongoose = require('mongoose');
 require('dotenv').config();
 const Config = require('./src/models/Config');
 
 const seedConfig = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log('Connected to MongoDB');
+    console.log('[NEURAL] Seeding System Configuration to Firebase RTDB...');
 
     const existing = await Config.findOne({ key: 'SYSTEM_CONFIG' });
     if (!existing) {
-      const defaultConfig = new Config({
+      await Config.create({
         key: 'SYSTEM_CONFIG',
         stockPlans: [
           { amount: 100, code: 'H100X' },
@@ -30,15 +28,15 @@ const seedConfig = async () => {
         maxDeposit: 50000
       });
 
-      await defaultConfig.save();
       console.log('Default SYSTEM_CONFIG seeded successfully');
     } else {
-      console.log('SYSTEM_CONFIG already exists');
+      console.log('SYSTEM_CONFIG already exists mapping detected.');
     }
 
-    mongoose.connection.close();
+    console.log('[NEURAL] Seed process complete.');
+    process.exit(0);
   } catch (err) {
-    console.error('Seed failed:', err);
+    console.error('Seed failed:', err.message);
     process.exit(1);
   }
 };

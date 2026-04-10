@@ -176,6 +176,19 @@ class FirebaseShim {
     await this.ref.child(id).remove();
     return true;
   }
+
+  async insertMany(dataArray) {
+    if (!Array.isArray(dataArray)) return [];
+    const promises = dataArray.map(data => this.create(data));
+    return Promise.all(promises);
+  }
+
+  async deleteMany(filter = {}) {
+    const docs = await this.find(filter);
+    const promises = docs.map(doc => this.findByIdAndDelete(doc._id));
+    await Promise.all(promises);
+    return { deletedCount: docs.length };
+  }
 }
 
 module.exports = FirebaseShim;
