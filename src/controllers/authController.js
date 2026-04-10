@@ -27,11 +27,13 @@ const sendOtp = async (req, res) => {
     return res.status(400).json({ message: 'Mobile or Email is required' });
   }
 
+  const normalizedIdentifier = identifier.toLowerCase();
+  
   // Generate 4-digit OTP
   const otp = "1234"; // Fixed for demo verification
-  otpStore.set(identifier, otp);
+  otpStore.set(normalizedIdentifier, otp);
 
-  console.log(`[NEURAL AUTH] OTP for ${identifier}: ${otp}`);
+  console.log(`[NEURAL AUTH] OTP for ${normalizedIdentifier}: ${otp}`);
 
   res.status(200).json({ message: 'OTP sent successfully', mockOtp: otp });
 };
@@ -46,16 +48,18 @@ const register = async (req, res) => {
     return res.status(400).json({ message: 'Missing Authorization: OTP handshaking required' });
   }
 
+  const normalizedEmail = email.toLowerCase();
+
   // 🛡️ Neural OTP Handshake
-  const storedOtp = otpStore.get(email);
+  const storedOtp = otpStore.get(normalizedEmail);
   if (!storedOtp || storedOtp !== otp) {
     return res.status(401).json({ message: 'Security Breach: Invalid Verification Code' });
   }
   
-  otpStore.delete(email); // Purge OTP after use
+  otpStore.delete(normalizedEmail); // Purge OTP after use
 
   // Prevent duplicate accounts
-  const existingUser = await User.findOne({ email });
+  const existingUser = await User.findOne({ email: normalizedEmail });
   if (existingUser) {
     return res.status(400).json({ message: 'Identity already bound to another node' });
   }
