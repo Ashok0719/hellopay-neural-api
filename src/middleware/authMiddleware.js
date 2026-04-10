@@ -4,33 +4,41 @@ const User = require('../models/User');
 const protect = async (req, res, next) => {
   let token;
 
-  if (
+  // Debugging: Log cookies to see if they are arriving
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[NEURAL AUTH] Received Cookies:', req.cookies);
+  }
+
+  // 1. Check Cookies (Primary for Web PWA)
+  if (req.cookies && req.cookies.token) {
+    token = req.cookies.token;
+  } 
+  // 2. Check Authorization Header (Backup for Mobile/Mobile-App)
+  else if (
     req.headers.authorization &&
     req.headers.authorization.startsWith('Bearer')
   ) {
+    token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (token) {
     try {
-      token = req.headers.authorization.split(' ')[1];
-
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret123');
-
       req.user = await User.findById(decoded.id);
 
       if (!req.user) {
-        res.status(401);
-        throw new Error('Not authorized, user not found');
+        return res.status(401).json({ message: 'Not authorized, user not found' });
       }
 
-      next();
+      return next();
     } catch (error) {
-      console.error(error);
-      res.status(401);
-      throw new Error('Not authorized, token failed');
+      console.error('[NEURAL AUTH ERROR] Token failed:', error.message);
+      return res.status(401).json({ message: 'Not authorized, token failed' });
     }
   }
 
   if (!token) {
-    res.status(401);
-    throw new Error('Not authorized, no token');
+    return res.status(401).json({ message: 'Not authorized, no token' });
   }
 };
 
