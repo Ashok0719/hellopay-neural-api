@@ -45,9 +45,14 @@ const app = express();
 const server = require('http').createServer(app);
 const io = new Server(server, {
   cors: { 
-    origin: process.env.NODE_ENV === 'production'
-      ? (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim())
-      : '*',
+    origin: (origin, callback) => {
+      if (!origin || process.env.NODE_ENV !== 'production') return callback(null, true);
+      const isAllowed = origin.includes('.vercel.app') || 
+                        origin.includes('.loca.lt') || 
+                        (process.env.ALLOWED_ORIGINS || '').split(',').includes(origin);
+      if (isAllowed) return callback(null, true);
+      callback(new Error('Neural CORS: Socket Node Unauthorized'), false);
+    },
     methods: ["GET", "POST", "PUT"] 
   }
 });
