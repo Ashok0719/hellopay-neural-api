@@ -72,8 +72,8 @@ app.use(helmet({
 
 // Step 6: Force COOP & COEP for Google Auth Stability
 app.use((req, res, next) => {
-  res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
-  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+  res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
   next();
 });
 
@@ -85,23 +85,8 @@ app.use((req, res, next) => {
 
 app.use(morgan('dev'));
 
-const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim())
-  : ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5000', '*'];
-
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow neural core, mobile nodes, and local development
-    if (!origin || process.env.NODE_ENV !== 'production') return callback(null, true);
-
-    // Auto-authorize all HelloPay Vercel and Tunnel subdomains
-    const isAllowedTunnel = origin.includes('.loca.lt') || origin.includes('.vercel.app') || origin.includes('api.hellopayapp.com');
-    
-    if (allowedOrigins.includes(origin) || isAllowedTunnel) {
-      return callback(null, true);
-    }
-    return callback(new Error(`CORS: Node [${origin}] not in Allowed Spectrum`), false);
-  },
+  origin: "https://hellopay-userweb.vercel.app",
   credentials: true
 }));
 app.use(express.json());
