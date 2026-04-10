@@ -5,7 +5,7 @@
   const StockTransaction = require('../models/StockTransaction');
 
   // Shared virtual-split helper (avoids code duplication)
-  const { findBestSplits, syncUserStocks } = require('../utils/financeLogic');
+  const { syncUserStocks } = require('../utils/financeLogic');
   const { updateTaskProgress } = require('./taskController');
 
   // Wrapper for controllers
