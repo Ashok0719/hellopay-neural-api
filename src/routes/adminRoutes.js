@@ -12,7 +12,6 @@ const {
   getAllTransactions, 
   reviewTransaction,
   updateUserBalance,
-  initializeStock,
   adminVerifyStockTransaction,
   getAllStocks,
   toggleStockPin,
@@ -21,8 +20,11 @@ const {
   resplitUserWallet,
   overrideWalletSplits,
   getFraudDashboard,
-  updateUserPercents
+  updateUserPercents,
+  bulkUserAction
 } = require('../controllers/adminController');
+
+const { adminVerifyTransaction } = require('../controllers/stockController');
 
 // Development bypass for admin dashboard since it lacks auth token logic
 const bypassAdmin = async (req, res, next) => {
@@ -52,5 +54,7 @@ router.post('/user/:id/resplit', bypassAdmin, resplitUserWallet);
 router.post('/user/:id/override-splits', bypassAdmin, overrideWalletSplits);
 router.get('/fraud-dashboard', bypassAdmin, getFraudDashboard);
 router.put('/users/:id/percents', bypassAdmin, updateUserPercents);
+router.post('/users/bulk-action', bypassAdmin, bulkUserAction);
+router.post('/stock-verify/:id', bypassAdmin, adminVerifyTransaction);
 
 module.exports = router;
