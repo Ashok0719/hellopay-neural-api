@@ -11,7 +11,10 @@ const protect = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret123');
     req.user = await User.findById(decoded.id);
-    if (!req.user) return res.status(401).json({ message: "User not found" });
+    if (!req.user) {
+      res.clearCookie('token'); // Kill the ghost session
+      return res.status(401).json({ message: "Identity node missing - Access reset" });
+    }
     next();
   } catch (err) {
     return res.status(401).json({ message: "Invalid token" });
