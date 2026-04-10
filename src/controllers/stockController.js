@@ -233,12 +233,16 @@ exports.buyStock = async (req, res) => {
     stock.selectionExpires = stock.lockedUntil;
     await stock.save();
 
+    // Neural 2.0: Unique Amount Generation (₹+1 to ₹+9) to distinguish P2P signals
+    const uniqueOffset = Math.floor(Math.random() * 9) + 1;
+    const expectedAmount = stock.amount + uniqueOffset;
+
     const transaction = await StockTransaction.create({
       transactionId: 'TXN' + Date.now() + Math.floor(Math.random() * 1000),
       stockId:       stock._id,
       buyerId:       buyer._id,
       sellerId:      stock.ownerId._id,
-      amount:        stock.amount,
+      amount:        expectedAmount,
       status:        'INIT'
     });
 
@@ -392,147 +396,88 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     }
 
     // ── 5. AI OCR ANALYSIS (40%) ──
-    let amountScore = 0;
-    let upiScore = 0;
-    let successScore = 0;
+    let amountMatch = false;
+    let upiMatch = false;
     try {
       const result = await require('tesseract.js').recognize(file.path, 'eng');
       const text = result.data.text.toUpperCase();
       
-      // Amount Extraction
+      // Amount Extraction with Tolerance (±2)
       const expectedAmount = parseFloat(transaction.amount);
-      const amountRegex = new RegExp(`\\b${expectedAmount}\\b|\\b${expectedAmount}\\.00\\b|\\b${expectedAmount.toLocaleString('en-IN')}\\b`);
-      if (amountRegex.test(text)) {
-         extractedData.extractedAmount = expectedAmount;
-         confidenceScore += 15;
-         amountScore = 15;
-      } else {
-         confidenceScore -= 30;
-         amountScore = -30;
-         flagReasons.push('Amount mismatch');
+      const extractedAmountMatch = text.match(/(\d+\.\d{2})|(\d+)/g);
+      if (extractedAmountMatch) {
+        for (const val of extractedAmountMatch) {
+          const v = parseFloat(val);
+          if (Math.abs(v - expectedAmount) <= 2) {
+             amountMatch = true;
+             extractedData.extractedAmount = v;
+             break;
+          }
+        }
       }
 
-      // UPI Extraction
-      const sellerUpiIdPrefix = transaction.sellerId?.upiId?.split('@')[0]?.toUpperCase();
-      if (sellerUpiIdPrefix && text.includes(sellerUpiIdPrefix)) {
-         extractedData.extractedReceiver = transaction.sellerId.upiId;
-         confidenceScore += 15;
-         upiScore = 15;
-      } else {
-         confidenceScore -= 30;
-         upiScore = -30;
-         flagReasons.push('UPI mismatch');
+      // UPI Identity Extraction
+      const sellerUpiId = (transaction.sellerId?.upiId || '').toUpperCase();
+      if (sellerUpiId && text.includes(sellerUpiId)) {
+         upiMatch = true;
+         extractedData.extractedReceiver = sellerUpiId;
       }
 
-      // Success Status Extraction
+      // Visual Status Extraction
       const successConfirmed = text.includes('SUCCESS') || text.includes('SUCCESSFUL') || text.includes('PAID TO');
       if (successConfirmed) {
-         confidenceScore += 10;
-         successScore = 10;
          extractedData.successConfirmed = true;
-      } else {
-         flagReasons.push('Visual success not confirmed');
       }
 
     } catch (ocrErr) {
       console.error('[Neural OCR] AI Analysis Failure:', ocrErr);
-      flagReasons.push('OCR Engine Failure');
+      flagReasons.push('Neural OCR Engine Timeout');
     }
 
-    // BOUND CONFIDENCE SCORE 0-100
-    confidenceScore = Math.max(0, Math.min(100, confidenceScore));
-
+    // ── 6. FINAL TIERED DECISION MATRIX ──
+    // Rule: UTR Format is already checked at start.
+    const utrValid = isUtrFormatValid && !existingTxByUtr;
+    
     transaction.utr = utr.trim();
     transaction.ocrData = { ...extractedData, flagReasons };
     transaction.imageHash = imageHash;
     transaction.screenshot = '/uploads/' + file.filename;
-    transaction.confidenceScore = confidenceScore;
-    
-    // Determine Risk Level dynamically
-    let riskLevel = 'High';
-    if (confidenceScore >= 90) riskLevel = 'Low';
-    else if (confidenceScore >= 70) riskLevel = 'Medium';
-    transaction.ocrData.riskLevel = riskLevel;
 
-    transaction.transparencyLogs = {
-      scoreBreakdown: {
-        utrFormat: isUtrFormatValid ? 15 : 0,
-        utrUnique: !existingTxByUtr ? 15 : -50,
-        timeValid: txAge <= 20 * 60 * 1000 ? 10 : 0,
-        amountMatch: amountScore,
-        upiMatch: upiScore,
-        visualSuccess: successScore,
-        behaviorAttempt: attemptScore,
-        screenshotReuse: existingImg ? -40 : 0
-      },
-      validationResults: {
-        extractedAmount: extractedData.extractedAmount,
-        flags: flagReasons
-      },
-      decisionReason: riskLevel === 'Low' ? 'High confidence score' : (riskLevel === 'Medium' ? 'Manual review required' : 'Fraud flagged due to discrepancies')
-    };
+    if (utrValid && amountMatch && upiMatch) {
+       // PLATINUM MATCH: AUTO-SETTLE
+       transaction.status = 'SUCCESS';
+       transaction.confidenceScore = 100;
+       transaction.isProcessed = true;
+       transaction.referenceId = `AUTO-TX-${Date.now()}`;
+       await transaction.save();
+       await executeStockRotation(transaction, req);
+       return res.json({ success: true, message: 'Payment auto-verified successfully via Neural OCR.', status: 'SUCCESS' });
+    } else if (utrValid && amountMatch) {
+       // GOLD MATCH: UTR & AMOUNT MATCH, BUT UPI NOT DETECTED -> PENDING REVIEW
+       transaction.status = 'PENDING_REVIEW';
+       transaction.confidenceScore = 75;
+       await transaction.save();
+       return res.json({ success: true, message: 'UTR and Amount matched. Admin verifying receiver identity...', status: 'PENDING_REVIEW' });
+    } else {
+       // SYSTEM FAULT: MISMATCH DETECTED
+       transaction.status = 'FRAUD_FLAGGED';
+       transaction.confidenceScore = 30;
+       await transaction.save();
 
-    // ── FINAL DECISION LOGIC ──
-    if (confidenceScore < 70) {
-      // HIGH RISK -> FRAUD FLAGGED
-      transaction.status = 'FRAUD_FLAGGED';
-      await transaction.save();
-      
-      // Release Stock
-      const failedStock = await Stock.findById(transaction.stockId);
-      if (failedStock) {
-        failedStock.status = 'AVAILABLE';
-        failedStock.lockedUntil = null;
-        await failedStock.save();
-      }
-      if (req.io) req.io.emit('stock_update', { action: 'unlocked', stockId: transaction.stockId });
-
-      try {
-        const { auditUserBehavior } = require('../utils/fraudEngine');
-        await auditUserBehavior(buyer._id, 'MULTIPLE_FRAUD_FLAGS', 20, req, `Score: ${confidenceScore}%. Reasons: ${flagReasons.join(', ')}`);
-      } catch (e) {}
-      
-      const currentFraudCount = await StockTransaction.countDocuments({ buyerId: buyer._id, status: 'FRAUD_FLAGGED' });
-      if (currentFraudCount >= 2) {
-        const dbBuyer = await User.findById(buyer._id);
-        if (dbBuyer) {
-            dbBuyer.isBlocked = true;
-            await dbBuyer.save();
-        }
-        return res.status(400).json({ success: false, message: 'Multiple suspicious activities detected' });
-      }
-
-      return res.status(400).json({ success: false, message: 'Verification failed due to mismatch' });
+       // Release stock since it clearly didn't match
+       const stock = await Stock.findById(transaction.stockId);
+       if (stock) {
+         stock.status = 'AVAILABLE';
+         stock.lockedUntil = null;
+         await stock.save();
+       }
+       
+       return res.status(400).json({ 
+         success: false, 
+         message: 'Verification Failed: Amount or UTR mismatch detected. Please check your data and retry.', 
+         status: 'FAILED' 
+       });
     }
-
-    if (confidenceScore >= 70 && confidenceScore < 90) {
-      // MEDIUM RISK -> REVIEW REQUIRED
-      transaction.status = 'PENDING_REVIEW';
-      await transaction.save();
-
-      // Hook up to Admin Dashboard socket directly
-      if (req.io) {
-        req.io.emit('fraud_alert', {
-          transactionId: transaction._id,
-          buyer: buyer.name,
-          score: confidenceScore,
-          reasons: flagReasons
-        });
-      }
-
-      return res.json({ success: true, message: 'Verification under review', confidenceScore });
-    }
-
-    // LOW RISK -> AUTO VERIFIED (>= 90%)
-    transaction.status = 'SUCCESS';
-    transaction.confidenceScore = confidenceScore;
-    transaction.isProcessed = true;
-    transaction.referenceId = `AUTO-TX-${Date.now()}`;
-    await transaction.save();
-
-    await executeStockRotation(transaction, req);
-    
-    return res.json({ success: true, message: 'Payment auto-verified successfully', confidenceScore });
 
   } catch (err) {
     console.error('[Neural Critical Error]', err);
