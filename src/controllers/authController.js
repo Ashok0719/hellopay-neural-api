@@ -632,5 +632,6 @@ module.exports = {
   saveUpi,
   completeProfile,
   toggleSelling,
-  resetPasswordWithPin
+  resetPasswordWithPin,
+  debugFirebase
 };
