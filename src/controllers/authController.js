@@ -40,59 +40,72 @@ const sendOtp = async (req, res) => {
 // @route   POST /api/auth/register
 // @access  Public
 const register = async (req, res) => {
-  const { name, email, password, pin, referralCode } = req.body;
+  try {
+    const { name, email, password, pin, referralCode } = req.body;
 
-  if (!name || !email || !password || !pin) {
-    return res.status(400).json({ message: 'Name, Email, Password and Safety PIN required' });
-  }
-
-  // Prevent duplicate accounts
-  const existingUser = await User.findOne({ email });
-  if (existingUser) {
-    return res.status(400).json({ message: 'Identity already bound to another node' });
-  }
-
-  // Create unique User ID (e.g., 6 digits)
-  const userIdNumber = Math.floor(100000 + Math.random() * 900000).toString();
-  const userReferralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
-
-  let referredBy = null;
-  if (referralCode) {
-    const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
-    if (referrer) {
-      referredBy = referrer._id;
-      // Increment referral count for real-time tracking
-      await User.findByIdAndUpdate(referrer._id, { $inc: { referralCount: 1 } });
+    if (!name || !email || !password || !pin) {
+      return res.status(400).json({ message: 'Name, Email, Password and Safety PIN required' });
     }
+
+    console.log(`[NEURAL REG] Attempting registration for: ${email}`);
+
+    // Prevent duplicate accounts
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      console.warn(`[NEURAL REG] Email already exists: ${email}`);
+      return res.status(400).json({ message: 'Identity already bound to another node' });
+    }
+
+    // Create unique User ID (6 digits)
+    const userIdNumber = Math.floor(100000 + Math.random() * 900000);
+    const userReferralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+
+    let referredBy = null;
+    if (referralCode) {
+      const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
+      if (referrer) {
+        referredBy = referrer._id;
+        await User.findByIdAndUpdate(referrer._id, { $inc: { referralCount: 1 } });
+        console.log(`[NEURAL REG] Referral detected: ${referralCode}`);
+      }
+    }
+
+    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+    const bonus = config?.referralBonus || 100;
+
+    const user = await User.create({
+      name,
+      email,
+      password, 
+      pin,
+      userIdNumber,
+      referralCode: userReferralCode,
+      referredBy,
+      walletBalance: referredBy ? bonus : 0, 
+      referralBonusAmount: referredBy ? bonus : 0, 
+      isOtpVerified: true,
+      isSetupComplete: true
+    });
+
+    console.log(`[NEURAL REG] Node Activated: ${user._id} (ID: ${userIdNumber})`);
+
+    const token = generateToken(user._id);
+    setAuthCookie(res, token);
+
+    res.status(201).json({
+      _id: user._id,
+      name: user.name,
+      userIdNumber,
+      token
+    });
+  } catch (err) {
+    console.error(`[NEURAL REG ERROR] ${err.message}`);
+    res.status(500).json({ 
+      message: err.code === 11000 
+        ? 'Neural Collision: An identity with these details already exists.' 
+        : 'Neural Handshake Failed: Registration Aborted' 
+    });
   }
-
-  // Fetch system config for dynamic bonus
-  const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-  const bonus = config?.referralBonus || 100;
-
-  const user = await User.create({
-    name,
-    email,
-    password, 
-    pin,
-    userIdNumber,
-    referralCode: userReferralCode,
-    referredBy,
-    walletBalance: referredBy ? bonus : 0, 
-    referralBonusAmount: referredBy ? bonus : 0, 
-    isOtpVerified: true,
-    isSetupComplete: true
-  });
-
-  const token = generateToken(user._id);
-  setAuthCookie(res, token);
-
-  res.status(201).json({
-    _id: user._id,
-    name: user.name,
-    userIdNumber,
-    token
-  });
 };
 
 const login = async (req, res) => {
