@@ -86,12 +86,19 @@ class FirebaseShim {
     if (keys.length > 0) {
       queryRef = queryRef.orderByChild(keys[0]).equalTo(filter[keys[0]]).limitToFirst(1);
     }
-    const promise = queryRef.once('value').then(snap => {
-      const val = snap.val();
-      if (!val) return null;
-      const key = Object.keys(val)[0];
-      return { ...val[key], _id: key, id: key };
-    });
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Firebase DB Timeout - Neural Signal Lost')), 10000)
+    );
+
+    const promise = Promise.race([
+      queryRef.once('value').then(snap => {
+        const val = snap.val();
+        if (!val) return null;
+        const key = Object.keys(val)[0];
+        return { ...val[key], _id: key, id: key };
+      }),
+      timeoutPromise
+    ]);
     return new FirebaseQuery(this, promise);
   }
 

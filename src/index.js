@@ -104,7 +104,7 @@ const adminLimiter = rateLimit({
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 500, // Standard protection for Public API
+  max: 2000, // Increased capacity to prevent sync blocking
 });
 
 app.use('/api/admin', adminLimiter);
