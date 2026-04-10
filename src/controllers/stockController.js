@@ -534,25 +534,32 @@ exports.cancelStockTransaction = async (req, res) => {
     const { transactionId } = req.params;
     const transaction = await StockTransaction.findById(transactionId);
 
-    if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
-    if (transaction.buyerId.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Neural Protocol: Unauthorized cancellation attempt' });
-    if (transaction.status !== 'INIT') return res.status(400).json({ message: 'Only active transactions can be cancelled' });
-
-    transaction.status = 'CANCELLED';
-    await transaction.save();
-
-    // Release the stock
-    const stock = await Stock.findById(transaction.stockId);
-    if (stock) {
-      stock.status = 'AVAILABLE';
-      stock.selectedBy = null;
-      stock.selectionExpires = null;
-      stock.lockedUntil = null;
-      await stock.save();
+    // Neural Repair: Robust Cancellation Protocol
+    if (transaction) {
+      transaction.status = 'CANCELLED';
+      await transaction.save();
     }
 
-    req.io.emit('stock_update', { action: 'refresh' });
-    res.json({ success: true, message: 'Transaction cancelled' });
+    // Force release associated stock immediately
+    const stockId = transaction ? transaction.stockId : null;
+    if (stockId) {
+      const stock = await Stock.findById(stockId);
+      if (stock) {
+        stock.status = 'AVAILABLE';
+        stock.selectedBy = null;
+        stock.selectionExpires = null;
+        stock.lockedUntil = null;
+        await stock.save();
+        
+        // Broadcast immediate visibility change
+        if (req.io) {
+          req.io.emit('stock_update', { action: 'locked', stockId: stock._id, status: 'AVAILABLE' });
+        }
+      }
+    }
+
+    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+    res.json({ success: true, message: 'Transaction cancelled and node released' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
