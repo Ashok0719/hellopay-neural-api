@@ -133,7 +133,7 @@ const login = async (req, res) => {
 // @desc    Reset Password via 4-digit Safety PIN
 // @route   POST /api/auth/reset-password-pin
 // @access  Public
-const resetPasswordWithPin = async (req, res) => {
+const forgotPassword = async (req, res) => {
   const { email, pin, newPassword } = req.body;
 
   if (!email || !pin || !newPassword) {
@@ -429,6 +429,39 @@ const firebaseLogin = async (req, res) => {
   }
 };
 
+const debugFirebase = async (req, res) => {
+  const admin = require('../config/firebase');
+  try {
+     const status = admin.apps.length > 0 ? 'ALIVE' : 'DEAD';
+     res.json({ status, project: admin.apps[0]?.options?.projectId || 'NONE' });
+  } catch (e) {
+     res.status(500).json({ status: 'ERROR', error: e.message });
+  }
+};
+
+const guestLogin = async (req, res) => {
+  try {
+    const guestPhone = `GUEST_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    const userReferralCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+    
+    const user = await User.create({
+      name: 'Neural Guest',
+      phone: guestPhone,
+      pin: '0000',
+      userIdNumber: Math.floor(100000 + Math.random() * 900000),
+      referralCode: userReferralCode,
+      isOtpVerified: true,
+      isSetupComplete: false
+    });
+
+    const token = generateToken(user._id);
+    setAuthCookie(res, token);
+    res.json({ _id: user._id, name: user.name, token, needsSetup: true });
+  } catch (e) {
+    res.status(500).json({ message: 'Guest initialization failed' });
+  }
+};
+
 // @desc    Change user PIN with old PIN verification
 // @route   POST /api/auth/change-pin
 // @access  Private
@@ -610,5 +643,7 @@ module.exports = {
   saveUpi,
   completeProfile,
   toggleSelling,
-  resetPasswordWithPin
+  forgotPassword,
+  debugFirebase,
+  guestLogin
 };

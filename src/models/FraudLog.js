@@ -1,4 +1,13 @@
-const FirebaseShim = require('../utils/FirebaseShim');
-const FraudLog = new FirebaseShim('fraudlogs');
+const mongoose = require('mongoose');
 
+const fraudLogSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  action: { type: String, required: true },
+  scoreAdded: { type: Number, required: true },
+  details: { type: String },
+  ipAddress: { type: String },
+  userAgent: { type: String },
+}, { timestamps: true });
+
+const FraudLog = mongoose.model('FraudLog', fraudLogSchema);
 module.exports = FraudLog;
