@@ -410,7 +410,7 @@ const firebaseLogin = async (req, res) => {
         firebaseUid: uid,
         profilePic: picture,
         userIdNumber,
-        pin: '0000', // Default temporary PIN
+        pin: null, // Zero-Trust: Mandatory PIN setup required on first entry
         referralCode: userReferralCode,
         referredBy,
         walletBalance: referredBy ? bonus : 0,
@@ -580,6 +580,12 @@ const completeProfile = async (req, res) => {
 
     user.name = name || user.name;
     if (password) user.password = password;
+    if (req.body.pin) {
+       if (!/^\d{4}$/.test(req.body.pin)) {
+         return res.status(400).json({ message: 'Safety PIN must be exactly 4 digits' });
+       }
+       user.pin = req.body.pin;
+    }
     user.isSetupComplete = true;
     await user.save();
 
