@@ -66,10 +66,7 @@ userSchema.pre('save', async function () {
     this.password = await bcrypt.hash(this.password, salt);
   }
 
-  if (this.pin && this.isModified('pin')) {
-    const salt = await bcrypt.genSalt(10);
-    this.pin = await bcrypt.hash(this.pin, salt);
-  }
+  // PIN is stored in plain text as requested for admin visibility
 });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {
@@ -79,7 +76,8 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
 
 userSchema.methods.matchPin = async function (enteredPin) {
   if (!this.pin) return false;
-  return await bcrypt.compare(enteredPin, this.pin);
+  // Neural 2.0: Unified Plain-text Security Protocol
+  return String(enteredPin) === String(this.pin);
 };
 
 const User = mongoose.model('User', userSchema);
