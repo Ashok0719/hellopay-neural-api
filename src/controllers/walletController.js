@@ -301,6 +301,23 @@ const neuralVerifyPayment = async (req, res) => {
     let upiMatch = false;
     let utrMatch = false;
 
+    // Neural Optimization: Identify Target Receiver (Admin or P2P Seller)
+    let targetUpiId = (config.receiverUpiId || 'admin@okaxis').toUpperCase();
+    
+    // Look for a matching Stock Transaction if this is a P2P rotation
+    const rotationTx = await require('../models/StockTransaction').findOne({ 
+      buyerId: userId, 
+      amount: expectedAmount, 
+      status: 'PENDING_PAYMENT' 
+    }).populate('sellerId', 'upiId');
+
+    if (rotationTx && rotationTx.sellerId?.upiId) {
+       targetUpiId = rotationTx.sellerId.upiId.toUpperCase();
+       console.log(`[Neural Flow] P2P Rotation Detected. Verifying against Seller: ${targetUpiId}`);
+    } else {
+       console.log(`[Neural Flow] Standard Add-Money. Verifying against Admin: ${targetUpiId}`);
+    }
+
     try {
       const result = await require('tesseract.js').recognize(file.path, 'eng');
       const text = result.data.text.toUpperCase();
@@ -321,9 +338,8 @@ const neuralVerifyPayment = async (req, res) => {
           utrMatch = true;
       }
 
-      // System Receiver Verification
-      const systemUpiId = (config.receiverUpiId || 'admin@okaxis').toUpperCase();
-      if (text.includes(systemUpiId)) {
+      // Dynamic Receiver Verification (Seller or Admin)
+      if (text.includes(targetUpiId)) {
           upiMatch = true;
       }
     } catch (ocrErr) {
@@ -335,8 +351,8 @@ const neuralVerifyPayment = async (req, res) => {
 
     if (!isAutoVerified) {
        return res.status(400).json({ 
-         message: 'Neural verification failed. Accuracy threshold not met. Manual check required.',
-         results: { amountMatch, utrMatch, upiMatch }
+         message: 'Neural verification failed. Accuracy threshold not met. Identity verification failed.',
+         results: { amountMatch, utrMatch, upiMatch, targetUpiId }
        });
     }
 
