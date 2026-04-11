@@ -25,6 +25,8 @@ const configSchema = new mongoose.Schema({
   withdrawalApprovalManual: { type: Boolean, default: true },
   splitDenominations: { type: [Number], default: [100, 500, 1000, 2000, 5000] },
   splitStrategy: { type: String, enum: ['AUTO', 'MANUAL'], default: 'AUTO' },
+  receiverUpiId: { type: String, default: 'admin@okaxis' },
+  receiverQrCode: { type: String, default: '' },
 }, { timestamps: true });
 
 const Config = mongoose.model('Config', configSchema);

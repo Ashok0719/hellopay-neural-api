@@ -30,6 +30,7 @@
     "mongoose": "^9.3.2",
     "morgan": "^1.10.1",
     "multer": "^2.1.1",
+    "paytmchecksum": "^1.5.1",
     "razorpay": "^2.9.6",
     "socket.io": "^4.8.3",
     "tesseract.js": "^7.0.0",

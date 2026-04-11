@@ -120,6 +120,7 @@ app.use('/api/listings', listingRoutes);
 app.use('/api/stocks', require('./routes/stockRoutes'));
 app.use('/api/support', require('./routes/supportRoutes'));
 app.use('/api/tasks', require('./routes/taskRoutes'));
+app.use('/api/paytm', require('./routes/paytmRoutes'));
 
 // Feature: Unique UPI Identity Flow
 const { upload }  = require('./middleware/uploadMiddleware');

@@ -155,6 +155,8 @@ const getPublicConfig = async (req, res) => {
     profitPercentage: config.profitPercentage,
     depositEnabled: config.depositEnabled,
     withdrawalEnabled: config.withdrawalEnabled,
+    receiverUpiId: config.receiverUpiId,
+    receiverQrCode: config.receiverQrCode,
     totalUsers
   });
 };
@@ -270,4 +272,120 @@ const requestWithdrawal = async (req, res) => {
   });
 };
 
-module.exports = { createOrder, verifyPayment, getWalletHistory, getPublicConfig, simulatePayment, requestWithdrawal };
+// @desc    Neural 2.0 Identity-Bound Auto-Verification
+// @route   POST /api/wallet/neural-verify
+// @access  Private
+const neuralVerifyPayment = async (req, res) => {
+  try {
+    const { amount, utr } = req.body;
+    const file = req.file;
+    const userId = req.user._id;
+
+    if (!amount || !utr || !file) {
+      return res.status(400).json({ message: 'Missing neural signals: amount, UTR, and proof required.' });
+    }
+
+    const config = await getSystemConfig();
+    const expectedAmount = parseFloat(amount);
+    
+    // 1. UTR Duplicity Check
+    const existingTx = await Transaction.create.name === 'Transaction' ? await Transaction.findOne({ referenceId: utr }) : null;
+    // Actually, check Transaction for duplicate referenceId (which we use for UTR here)
+    const duplicateUtr = await Transaction.findOne({ referenceId: utr });
+    if (duplicateUtr) {
+      return res.status(400).json({ message: 'Security Alert: UTR already processed by another node.' });
+    }
+
+    // 2. OCR Verification Engine
+    let amountMatch = false;
+    let upiMatch = false;
+    let utrMatch = false;
+
+    try {
+      const result = await require('tesseract.js').recognize(file.path, 'eng');
+      const text = result.data.text.toUpperCase();
+      
+      // Amount Extraction
+      const matches = text.match(/(\d+\.\d{2})|(\d+)/g);
+      if (matches) {
+          for (const val of matches) {
+              if (Math.abs(parseFloat(val) - expectedAmount) <= 2) {
+                  amountMatch = true;
+                  break;
+              }
+          }
+      }
+
+      // UTR Extraction
+      if (text.includes(utr.toUpperCase())) {
+          utrMatch = true;
+      }
+
+      // System Receiver Verification
+      const systemUpiId = (config.receiverUpiId || 'admin@okaxis').toUpperCase();
+      if (text.includes(systemUpiId)) {
+          upiMatch = true;
+      }
+    } catch (ocrErr) {
+      console.error('Neural OCR Error:', ocrErr);
+    }
+
+    // Final Validation Logic
+    const isAutoVerified = (amountMatch && (utrMatch || upiMatch));
+
+    if (!isAutoVerified) {
+       return res.status(400).json({ 
+         message: 'Neural verification failed. Accuracy threshold not met. Manual check required.',
+         results: { amountMatch, utrMatch, upiMatch }
+       });
+    }
+
+    // Success Flow - Atomic Credit
+    const user = await User.findById(userId);
+    const { userParts, adminExtra, cashback } = calculateFinancials(expectedAmount, config);
+
+    user.walletBalance += expectedAmount;
+    user.rewardBalance += cashback;
+    user.totalRewards += cashback;
+    user.totalDeposited += expectedAmount;
+    await user.save();
+
+    const transaction = await Transaction.create({
+      senderId: userId,
+      receiverId: userId,
+      type: 'add_money',
+      amount: expectedAmount,
+      status: 'SUCCESS',
+      transactionId: utr,
+      referenceId: utr,
+      screenshotUrl: `/uploads/${file.filename}`,
+      description: 'Auto-Verified Neural Deposit'
+    });
+
+    await WalletLog.create({
+      userId,
+      action: 'credit',
+      amount: expectedAmount,
+      balanceAfter: user.walletBalance,
+      description: `Auto-Verified Deposit: ₹${expectedAmount}`,
+    });
+
+    // Sync stocks
+    await syncUserStocks(User, Stock, userId, user.walletBalance, config);
+
+    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+
+    res.json({
+      success: true,
+      message: 'Neural node activated. Payment auto-verified.',
+      newBalance: user.walletBalance,
+      transactionId: transaction._id
+    });
+
+  } catch (err) {
+    console.error('Neural Verify Controller Error:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+module.exports = { createOrder, verifyPayment, getWalletHistory, getPublicConfig, simulatePayment, requestWithdrawal, neuralVerifyPayment };
