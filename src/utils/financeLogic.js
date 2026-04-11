@@ -53,24 +53,11 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
     
     const targetAmount = Math.floor(tradableBalance / 100) * 100;
 
-    let availableStocks = await StockModel.find({ ownerId: userId, status: 'AVAILABLE' });
-    let currentAvailableSum = availableStocks.reduce((sum, s) => sum + s.amount, 0);
-
-    // If forced to resplit by admin, or if current available config is severely mismatched, we drop them.
-    if (forceResplit || (currentAvailableSum > targetAmount)) {
-      // Simplest way to reconcile if we have more available than we should (e.g. they transferred out or bought)
-      // or if admin requested a clean slate:
-      await StockModel.deleteMany({ ownerId: userId, status: 'AVAILABLE' });
-      availableStocks = [];
-      currentAvailableSum = 0;
-    }
+    // ALWAYS clear available stocks to prevent duplicates and ensure 1:1 balance mapping
+    await StockModel.deleteMany({ ownerId: userId, status: 'AVAILABLE' });
+    let currentAvailableSum = 0;
 
     const deficit = targetAmount - currentAvailableSum;
-
-    if (deficit <= 0) {
-      // Nothing to create, IDs are preserved perfectly!
-      return availableStocks;
-    }
 
     // We must generate splits equal to `deficit`
     const chunks = [];
@@ -129,7 +116,7 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
       }
     }
 
-    return [...availableStocks, ...stocksToCreate];
+    return stocksToCreate;
   } catch (err) {
     console.error('[Neural Sync Error] Finance Logic Matrix Failed:', err);
     throw err;
