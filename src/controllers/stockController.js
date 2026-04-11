@@ -88,7 +88,7 @@ exports.getStocks = async (req, res) => {
     })
       .populate('ownerId', 'name upiId qrCode userIdNumber isOpenSelling')
       .populate('selectedBy', 'name')
-      .sort({ createdAt: 1 }); // FIFO: Oldest First
+      .sort({ isPinned: -1, createdAt: 1 }); // Pinned First, then FIFO
 
     // Feature: Marketplace Visibility (Neural Toggle)
     const filtered = stocks.filter(s => {
