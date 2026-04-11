@@ -105,7 +105,9 @@ const limiter = rateLimit({
 app.use('/api/admin', adminLimiter);
 app.use('/api/', limiter);
 
-app.use('/uploads', express.static('uploads'));
+const path = require('path');
+
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Routes
 const { saveUpi } = require('./controllers/authController');
