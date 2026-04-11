@@ -343,10 +343,10 @@ const updateUserProfile = async (req, res) => {
         return res.status(403).json({ message: `Security Lock: UPI can only be changed once in 24h. Please wait ${hoursLeft}h.` });
       }
 
-      // 3. Regex Validation
+      // 3. Regex & Handle Validation
       const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-      if (!upiRegex.test(finalUpi)) {
-        return res.status(400).json({ message: 'Neural Fault: Invalid UPI Format Detected' });
+      if (!upiRegex.test(finalUpi) || !finalUpi.endsWith('@freecharge')) {
+        return res.status(400).json({ message: 'Neural Fault: Only @freecharge handles are permitted.' });
       }
 
       // 4. Unique UPI Check
@@ -539,10 +539,7 @@ const saveUpi = async (req, res) => {
     }
 
     // 3. Expanded Allowed Handles
-    const validHandles = [
-      'okaxis', 'oksbi', 'okhdfcbank', 'okicici', 'ybl', 'ibl', 'axl', 'apl', 'paytm', 'upi',
-      'ptaxis', 'ptsbi', 'pthdfc'
-    ];
+    const validHandles = ['freecharge'];
     if (!validHandles.includes(handle)) {
       return res.status(400).json({ success: false, message: `Invalid Handler @${handle}` });
     }
