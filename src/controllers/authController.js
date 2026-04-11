@@ -502,81 +502,64 @@ const changePin = async (req, res) => {
  */
 const saveUpi = async (req, res) => {
   try {
-    let { upiId } = req.body;
-    if (!upiId) return res.status(400).json({ success: false, message: 'UPI ID required' });
+    let { upiId, pin } = req.body;
+    if (!upiId && !req.file) return res.status(400).json({ success: false, message: 'UPI ID or QR Code required' });
     
-    upiId = upiId.toLowerCase().trim();
-    
-    // FEATURE: PHONE NUMBER AUTO-CONVERT (BACKEND)
-    if (/^\d{10}$/.test(upiId)) {
-      upiId = `${upiId}@upi`;
-    }
-
-    // 1. Regex Validation (Relaxed for Real-World Compatibility)
-    const upiRegex = /^[a-z0-9._-]{3,}@[a-z]{2,}$/;
-    if (!upiRegex.test(upiId)) {
-      return res.status(400).json({ success: false, message: 'Invalid Neural ID Format' });
-    }
-
-    // 2. Rules: Length & Type Check
-    const [username, handle] = upiId.split('@');
-    
-    // Numeric-only usernames (e.g., Paytm)
-    if (/^\d+$/.test(username)) {
-      if (username.length < 8 || username.length > 15) {
-        return res.status(400).json({ success: false, message: 'Numeric Identity must be 8-15 digits' });
-      }
-    } else {
-      // Mixed usernames
-      if (username.length < 3) {
-        return res.status(400).json({ success: false, message: 'Identity Node too short (min 3 chars)' });
-      }
-    }
-
-    // Still block repeated symbols
-    if (username.includes('..') || username.includes('__') || username.includes('--')) {
-      return res.status(400).json({ success: false, message: 'Sequential symbols are blocked for security' });
-    }
-
-    // 3. Expanded Allowed Handles
-    const validHandles = ['freecharge'];
-    if (!validHandles.includes(handle)) {
-      return res.status(400).json({ success: false, message: `Invalid Handler @${handle}` });
-    }
-
-    const { pin } = req.body;
     const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
 
-    if (!user.pin) {
-      // First time setting PIN, allowed to proceed
-    } else if (!pin || !(await user.matchPin(pin))) {
+    // 1. PIN Verification (Required for any security change)
+    if (user.pin && (!pin || !(await user.matchPin(pin)))) {
       return res.status(401).json({ success: false, message: 'Invalid Security PIN' });
     }
 
-    // 4. Duplicate Check
-    const existing = await User.findOne({ upiId, _id: { $ne: user._id } });
-    if (existing) {
-      return res.status(400).json({ success: false, message: 'This UPI ID is already linked to another account' });
+    if (upiId) {
+      upiId = upiId.toLowerCase().trim();
+      
+      // Auto-convert phone to @upi (legacy support) or enforce @freecharge
+      if (/^\d{10}$/.test(upiId)) {
+        upiId = `${upiId}@upi`;
+      }
+
+      // Regex Validation
+      const upiRegex = /^[a-z0-9._-]{3,}@[a-z]{2,}$/;
+      if (!upiRegex.test(upiId)) {
+        return res.status(400).json({ success: false, message: 'Invalid Neural ID Format' });
+      }
+
+      const [username, handle] = upiId.split('@');
+      const validHandles = ['freecharge'];
+      if (!validHandles.includes(handle)) {
+        return res.status(400).json({ success: false, message: `Invalid Handler @${handle}` });
+      }
+
+      // Duplicate Check
+      const existing = await User.findOne({ upiId, _id: { $ne: user._id } });
+      if (existing) {
+        return res.status(400).json({ success: false, message: 'This UPI ID is already linked to another account' });
+      }
+
+      user.upiId = upiId;
+      user.verifiedUpiId = upiId;
     }
 
-    // 5. Save Verified Status
-    user.upiId = upiId;
-    user.verifiedUpiId = upiId;
-    user.isUpiVerified = true; 
-    user.upiModifiedAt = new Date();
-    
+    // 2. File Upload
     if (req.file) {
       user.qrCode = `/uploads/${req.file.filename}`;
     }
 
+    user.isUpiVerified = true; 
+    user.upiModifiedAt = new Date();
     await user.save();
 
     res.json({ 
       success: true, 
       message: 'UPI Node Identity Verified & Saved',
-      upiId: user.upiId 
+      upiId: user.upiId,
+      qrCode: user.qrCode
     });
   } catch (err) {
+    console.error('Save UPI Error:', err);
     res.status(500).json({ success: false, message: 'Neural Registry Failure' });
   }
 };
