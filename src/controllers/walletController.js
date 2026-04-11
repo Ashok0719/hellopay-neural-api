@@ -18,7 +18,7 @@ const initOCR = async () => {
 initOCR();
 
 const expireStaleOrders = async () => {
-  const staleLimit = new Date(Date.now() - 15 * 60 * 1000); // 15 Minutes
+  const staleLimit = new Date(Date.now() - 5 * 60 * 1000); // 5 Minutes
   try {
      const staleCount = await StockTransaction.updateMany(
         { status: 'PENDING_PAYMENT', createdAt: { $lt: staleLimit } },
@@ -582,4 +582,82 @@ const neuralVerifyPayment = async (req, res) => {
   }
 };
 
-module.exports = { createOrder, verifyPayment, getWalletHistory, getPublicConfig, simulatePayment, requestWithdrawal, neuralVerifyPayment, matchP2P };
+const verifySmsPayment = async (req, res) => {
+  try {
+    const { amount, utr, rawMessage, source } = req.body;
+    
+    console.log(`[APK SMS Listener] Received Signal: ₹${amount}, UTR: ${utr} (${source})`);
+    
+    // 1. Security Check: Prevent Duplicate UTR
+    const duplicate = await Transaction.findOne({ referenceId: utr });
+    if (duplicate) {
+       console.warn(`[APK SMS] Duplicate signal rejected: ${utr}`);
+       return res.status(400).json({ message: 'Duplicate Transaction ID detected' });
+    }
+
+    // 2. Locate Pending Rotation (Requirement: Within last 5 minutes)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const rotationTx = await StockTransaction.findOne({
+       status: 'PENDING_PAYMENT',
+       createdAt: { $gte: fiveMinutesAgo }
+    }).populate('buyerId sellerId');
+
+    if (!rotationTx) {
+       console.warn(`[APK SMS] No matching active rotation within 5min window.`);
+       return res.status(200).json({ success: false, message: 'Signal logged but no active node found.' });
+    }
+
+    // 2.1 Feature: Amount Tolerance Check (Rule 3)
+    const expectedAmount = rotationTx.amount;
+    const paidAmount = Number(amount);
+    if (Math.abs(paidAmount - expectedAmount) > 1) {
+       console.error(`[APK SMS] Amount Mismatch Blocked: Expected ₹${expectedAmount}, Paid ₹${paidAmount}`);
+       return res.status(400).json({ success: false, message: 'Payment Amount Mismatch. Identity check failed.' });
+    }
+
+    const userId = rotationTx.buyerId._id;
+    const user = rotationTx.buyerId;
+    const seller = rotationTx.sellerId;
+    const { cashback } = calculateFinancials(rotationTx.amount, config);
+
+    // 3. Execution: Success Flow
+    user.walletBalance += rotationTx.amount;
+    user.rewardBalance += cashback;
+    user.totalRewards += cashback;
+    user.totalDeposited += rotationTx.amount;
+    await user.save();
+
+    // Log the transaction with Device Binding
+    const transaction = await Transaction.create({
+      senderId: userId,
+      receiverId: userId,
+      type: 'add_money',
+      amount: rotationTx.amount,
+      status: 'SUCCESS',
+      transactionId: utr,
+      referenceId: utr,
+      deviceId: req.body.deviceId || 'UNKNOWN_APK',
+      ipAddress: req.ip,
+      description: `APK Auto-SMS Verified: ₹${rotationTx.amount} (Device: ${req.body.deviceId || 'N/A'})`
+    });
+
+    rotationTx.utr = utr;
+    rotationTx.status = 'SUCCESS';
+    rotationTx.confidenceScore = 100;
+    await rotationTx.save();
+
+    // 4. Update Marketplace Nodes
+    await syncUserStocks(User, Stock, userId, user.walletBalance, config);
+    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+
+    console.log(`[APK SMS Success] Multi-vector verification complete for User ${user.userIdNumber}. Asset updated.`);
+    
+    res.json({ success: true, message: 'APK Signal Verified' });
+
+  } catch (err) {
+    console.error('APK SMS Verification Error:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+module.exports = { createOrder, verifyPayment, getWalletHistory, getPublicConfig, simulatePayment, requestWithdrawal, neuralVerifyPayment, matchP2P, verifySmsPayment };
