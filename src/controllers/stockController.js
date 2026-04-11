@@ -570,43 +570,7 @@ exports.cancelStockTransaction = async (req, res) => {
   }
 };
 
-// --- Admin Manual Verification Controller ---
-exports.adminVerifyTransaction = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body; // SUCCESS or FAILED
-    const transaction = await StockTransaction.findById(id);
-
-    if (!transaction) return res.status(404).json({ success: false, message: 'Transaction node not found' });
-    if (transaction.status === 'SUCCESS' || transaction.status === 'FAILED') {
-      return res.status(400).json({ success: false, message: `Node already processed as ${transaction.status}` });
-    }
-
-    const finalStatus = status || 'SUCCESS';
-    transaction.status = finalStatus;
-    
-    if (finalStatus === 'SUCCESS') {
-       transaction.isProcessed = true;
-       transaction.referenceId = `MANUAL-TX-${Date.now()}`;
-       await transaction.save();
-       await executeStockRotation(transaction, req);
-    } else {
-       transaction.isProcessed = true;
-       await transaction.save();
-       // Release stock
-       const stock = await Stock.findById(transaction.stockId);
-       if (stock) {
-          stock.status = 'AVAILABLE';
-          stock.lockedUntil = null;
-          await stock.save();
-       }
-    }
-
-    res.json({ success: true, message: `Node manually set to ${finalStatus}. Signal processed.`, status: finalStatus });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
+// Redundant version removed to unify logic in adminController.js
 
 exports.getTransaction = async (req, res) => {
   try {

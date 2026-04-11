@@ -25,8 +25,6 @@ const {
   bulkUserAction
 } = require('../controllers/adminController');
 
-const { adminVerifyTransaction } = require('../controllers/stockController');
-
 // Development bypass for admin dashboard since it lacks auth token logic
 const bypassAdmin = async (req, res, next) => {
   let adminUser = await User.findOne({ role: 'admin' });
@@ -56,6 +54,6 @@ router.post('/user/:id/override-splits', bypassAdmin, overrideWalletSplits);
 router.get('/fraud-dashboard', bypassAdmin, getFraudDashboard);
 router.put('/users/:id/percents', bypassAdmin, updateUserPercents);
 router.post('/users/bulk-action', bypassAdmin, bulkUserAction);
-router.post('/stock-verify/:id', bypassAdmin, adminVerifyTransaction);
+router.post('/stock-verify/:id', bypassAdmin, adminVerifyStockTransaction);
 
 module.exports = router;
