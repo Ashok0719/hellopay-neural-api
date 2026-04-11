@@ -101,9 +101,16 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
     const stocksToCreate = [];
     const timestamp = Date.now();
     
+    const generateShortId = () => {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Avoid ambiguous chars like I, O, 0, 1
+      let result = '';
+      for (let j = 0; j < 5; j++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+      return result;
+    };
+
     for (let i = 0; i < chunks.length; i++) {
       stocksToCreate.push({
-        stockId: `NODE ${Math.floor(Math.random() * 90000 + 10000)}`,
+        stockId: generateShortId(),
         amount: chunks[i],
         ownerId: userId,
         ownerUpiId: user.upiId || 'admin@upi',
