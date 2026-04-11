@@ -352,6 +352,9 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     let confidenceScore = 0;
     let extractedData = { extractedAmount: 0, extractedUtr: null, extractedReceiver: null, extractedDate: null };
     let flagReasons = [];
+    let imageHash = null;
+    let amountMatch = false;
+    let upiMatch = false;
 
     // ── 1. UTR VALIDATION (30%) ──
     const isUtrFormatValid = /^\d{12}$/.test(utr.trim());
@@ -372,6 +375,12 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     // ── 2. SCREENSHOT REUSE (ANTI-FRAUD) ──
     const utrValid = isUtrFormatValid && !existingTxByUtr;
     transaction.utr = userUtr;
+    
+    if (file && require('fs').existsSync(file.path)) {
+      const fileBuffer = require('fs').readFileSync(file.path);
+      imageHash = require('crypto').createHash('md5').update(fileBuffer).digest('hex');
+    }
+
     transaction.imageHash = imageHash;
     if (file) transaction.screenshot = '/uploads/' + file.filename;
 
