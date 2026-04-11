@@ -4,6 +4,9 @@ const WalletLog = require('../models/WalletLog');
 const Stock = require('../models/Stock');
 const Config = require('../models/Config');
 const { calculateFinancials, syncUserStocks } = require('../utils/financeLogic');
+const Tesseract = require('tesseract.js');
+const StockTransaction = require('../models/StockTransaction');
+const crypto = require('crypto');
 
 // Helper to get system config or default
 const getSystemConfig = async () => {
@@ -377,19 +380,19 @@ const neuralVerifyPayment = async (req, res) => {
     if (rotationTx && rotationTx.sellerId?.upiId) {
        targetUpiId = rotationTx.sellerId.upiId.toUpperCase();
        console.log(`[Neural Flow] P2P Rotation Detected. Verifying against Seller: ${targetUpiId}`);
-    } else {
-       console.log(`[Neural Flow] Standard Add-Money. Verifying against Admin: ${targetUpiId}`);
     }
 
     try {
-      const result = await require('tesseract.js').recognize(file.path, 'eng');
+      console.log(`[Neural Engine] Starting OCR Analysis for ${file.filename}...`);
+      const result = await Tesseract.recognize(file.path, 'eng');
       const text = result.data.text.toUpperCase();
       
       // Amount Extraction
-      const matches = text.match(/(\d+\.\d{2})|(\d+)/g);
+      const matches = text.match(/[\d,]+\.\d{2}|[\d,]+/g);
       if (matches) {
-          for (const val of matches) {
-              if (Math.abs(parseFloat(val) - expectedAmount) <= 2) {
+          for (let val of matches) {
+              const cleanVal = parseFloat(val.replace(/,/g, ''));
+              if (Math.abs(cleanVal - expectedAmount) <= 2) {
                   amountMatch = true;
                   break;
               }
@@ -411,17 +414,28 @@ const neuralVerifyPayment = async (req, res) => {
 
     // Final Validation Logic
     const isAutoVerified = (amountMatch && (utrMatch || upiMatch));
+    const screenshotPath = `/uploads/${file.filename}`;
+
+    // Update Rotation Record if exists
+    if (rotationTx) {
+      rotationTx.utr = utr;
+      rotationTx.screenshot = screenshotPath;
+      rotationTx.status = isAutoVerified ? 'SUCCESS' : 'PENDING_VERIFICATION';
+      rotationTx.confidenceScore = isAutoVerified ? 100 : 50;
+      await rotationTx.save();
+    }
 
     if (!isAutoVerified) {
-       return res.status(400).json({ 
-         message: 'Neural verification failed. Accuracy threshold not met. Identity verification failed.',
+       return res.status(200).json({ 
+         success: false,
+         message: 'Neural verification signature is unclear. Your proof has been submitted for manual administration review.',
          results: { amountMatch, utrMatch, upiMatch, targetUpiId }
        });
     }
 
     // Success Flow - Atomic Credit
     const user = await User.findById(userId);
-    const { userParts, adminExtra, cashback } = calculateFinancials(expectedAmount, config);
+    const { cashback } = calculateFinancials(expectedAmount, config);
 
     user.walletBalance += expectedAmount;
     user.rewardBalance += cashback;
@@ -429,6 +443,7 @@ const neuralVerifyPayment = async (req, res) => {
     user.totalDeposited += expectedAmount;
     await user.save();
 
+    // Create Audit Transaction
     const transaction = await Transaction.create({
       senderId: userId,
       receiverId: userId,
@@ -437,8 +452,8 @@ const neuralVerifyPayment = async (req, res) => {
       status: 'SUCCESS',
       transactionId: utr,
       referenceId: utr,
-      screenshotUrl: `/uploads/${file.filename}`,
-      description: 'Auto-Verified Neural Deposit'
+      screenshotUrl: screenshotPath,
+      description: rotationTx ? `P2P Auto-Verified Recharge` : 'Admin Auto-Verified Deposit'
     });
 
     await WalletLog.create({
@@ -449,7 +464,41 @@ const neuralVerifyPayment = async (req, res) => {
       description: `Auto-Verified Deposit: ₹${expectedAmount}`,
     });
 
-    // Sync stocks
+    // If P2P Rotation -> Update Stock Node & Seller Balance
+    if (rotationTx) {
+      const stock = await Stock.findById(rotationTx.stockId);
+      if (stock) {
+        stock.status = 'SOLD';
+        await stock.save();
+      }
+
+      // Seller Liquidation
+      const seller = await User.findById(rotationTx.sellerId._id);
+      if (seller) {
+        seller.walletBalance = Math.max(0, seller.walletBalance - expectedAmount);
+        await seller.save();
+        
+        await WalletLog.create({
+          userId: seller._id,
+          action: 'debit',
+          amount: expectedAmount,
+          balanceAfter: seller.walletBalance,
+          description: `Node Rotation Liquidation: Cash received by bank.`
+        });
+
+        // Re-sync seller nodes
+        await syncUserStocks(User, Stock, seller._id, seller.walletBalance, config);
+        
+        if (req.io) {
+          req.io.emit('userStatusChanged', { 
+            userId: seller._id, 
+            walletBalance: seller.walletBalance 
+          });
+        }
+      }
+    }
+
+    // Re-sync buyer nodes
     await syncUserStocks(User, Stock, userId, user.walletBalance, config);
 
     if (req.io) req.io.emit('stock_update', { action: 'refresh' });
