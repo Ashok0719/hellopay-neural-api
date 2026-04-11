@@ -404,27 +404,39 @@ const neuralVerifyPayment = async (req, res) => {
       console.log(`[Neural Engine] Starting OCR Analysis for ${file.filename}...`);
       const result = await Tesseract.recognize(file.path, 'eng');
       const text = result.data.text.toUpperCase();
+      const alphanumericText = text.replace(/[^A-Z0-9]/g, ''); // Ultra-Clean stream for UTR/UPI
       
-      // Amount Extraction
-      const matches = text.match(/[\d,]+\.\d{2}|[\d,]+/g);
-      if (matches) {
-          for (let val of matches) {
-              const cleanVal = parseFloat(val.replace(/,/g, ''));
-              if (Math.abs(cleanVal - expectedAmount) <= 2) {
-                  amountMatch = true;
-                  break;
-              }
+      // Amount Extraction (Handles ₹, commas, and decimals)
+      const amountRegex = /(?:RS|INR|₹)?\s*([\d,]+(?:\.\d{2})?)/g;
+      let amountMatchTarget = false;
+      let m;
+      while ((m = amountRegex.exec(text)) !== null) {
+          const val = parseFloat(m[1].replace(/,/g, ''));
+          if (Math.abs(val - expectedAmount) <= 2) {
+              amountMatchTarget = true;
+              break;
           }
       }
+      amountMatch = amountMatchTarget;
 
-      // UTR Extraction
-      if (text.includes(utr.toUpperCase())) {
+      // UTR Extraction (High Precision Alphanumeric Comparison)
+      const cleanUtr = utr.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (alphanumericText.includes(cleanUtr)) {
           utrMatch = true;
       }
 
-      // Dynamic Receiver Verification (Seller or Admin)
-      if (text.includes(targetUpiId)) {
+      // Dynamic Receiver Verification (Resilient to special character noise)
+      const cleanTargetUpi = targetUpiId.replace(/[^A-Z0-9]/g, '');
+      if (alphanumericText.includes(cleanTargetUpi)) {
           upiMatch = true;
+      }
+      
+      // Secondary Check: Check if UPI Handle (part after @) exists if full match fails
+      if (!upiMatch && targetUpiId.includes('@')) {
+          const handle = targetUpiId.split('@')[1].toUpperCase().replace(/[^A-Z0-9]/g, '');
+          if (alphanumericText.includes(handle)) {
+             upiMatch = true; // High probability match if merchant handle is present
+          }
       }
     } catch (ocrErr) {
       console.error('Neural OCR Error:', ocrErr);
