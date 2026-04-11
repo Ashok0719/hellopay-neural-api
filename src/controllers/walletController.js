@@ -4,9 +4,18 @@ const WalletLog = require('../models/WalletLog');
 const Stock = require('../models/Stock');
 const Config = require('../models/Config');
 const { calculateFinancials, syncUserStocks } = require('../utils/financeLogic');
-const Tesseract = require('tesseract.js');
 const StockTransaction = require('../models/StockTransaction');
 const crypto = require('crypto');
+
+// Optimized Neural OCR Engine (Initialized at startup for Instant Verification)
+let ocrWorker = null;
+const initOCR = async () => {
+  if (ocrWorker) return;
+  const { createWorker } = require('tesseract.js');
+  ocrWorker = await createWorker('eng');
+  console.log('[Neural OCR] Engine Primed and Ready.');
+};
+initOCR();
 
 const expireStaleOrders = async () => {
   const staleLimit = new Date(Date.now() - 15 * 60 * 1000); // 15 Minutes
@@ -377,7 +386,7 @@ const neuralVerifyPayment = async (req, res) => {
     // Actually, check Transaction for duplicate referenceId (which we use for UTR here)
     const duplicateUtr = await Transaction.findOne({ referenceId: utr });
     if (duplicateUtr) {
-      return res.status(400).json({ message: 'Security Alert: UTR already processed by another node.' });
+      return res.status(400).json({ message: 'Security Alert: UPI Transaction ID already processed by another node.' });
     }
 
     // 2. OCR Verification Engine
@@ -401,16 +410,17 @@ const neuralVerifyPayment = async (req, res) => {
     }
 
     try {
-      console.log(`[Neural Engine] Starting OCR Analysis for ${file.filename}...`);
-      const result = await Tesseract.recognize(file.path, 'eng');
-      const text = result.data.text.toUpperCase();
-      const alphanumericText = text.replace(/[^A-Z0-9]/g, ''); // Ultra-Clean stream for UTR/UPI
+      console.log(`[Neural Engine] Starting Instant OCR Analysis for ${file.filename}...`);
+      if (!ocrWorker) await initOCR();
+      const { data: { text } } = await ocrWorker.recognize(file.path);
+      const textUpper = text.toUpperCase();
+      const alphanumericText = textUpper.replace(/[^A-Z0-9]/g, ''); // Ultra-Clean stream
       
       // Amount Extraction (Handles ₹, commas, and decimals)
       const amountRegex = /(?:RS|INR|₹)?\s*([\d,]+(?:\.\d{2})?)/g;
       let amountMatchTarget = false;
       let m;
-      while ((m = amountRegex.exec(text)) !== null) {
+      while ((m = amountRegex.exec(textUpper)) !== null) {
           const val = parseFloat(m[1].replace(/,/g, ''));
           if (Math.abs(val - expectedAmount) <= 2) {
               amountMatchTarget = true;
@@ -427,7 +437,7 @@ const neuralVerifyPayment = async (req, res) => {
       
       // Secondary Transaction ID check (for UPI Txn IDs that might differ from UTR)
       if (!utrMatch) {
-          const txnIdMatches = text.match(/(?:TXN|TRANS|ID)\s*:?\s*([A-Z0-9]{10,})/g);
+          const txnIdMatches = textUpper.match(/(?:TXN|TRANS|ID)\s*:?\s*([A-Z0-9]{10,})/g);
           if (txnIdMatches) {
               for (let match of txnIdMatches) {
                   const cleanedMatch = match.replace(/[^A-Z0-9]/g, '');
