@@ -331,13 +331,14 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     const buyer   = req.user;
     const file    = req.file;
 
-    // ── STRICT RULE: BOTH MUST EXIST ──
-    if (!file || !utr) {
-      return res.status(400).json({ success: false, message: 'Upload both UTR and screenshot' });
+    // ── FEATURE: QUICK SETTLEMENT (Requirement: Allow UTR-only) ──
+    if (!utr) {
+      return res.status(400).json({ success: false, message: 'Neural Fault: UTR signal required for verification.' });
     }
 
     // ── STRICT RULE: UTR PATTERN (12 Digits) ──
-    if (!/^\d{12}$/.test(utr.trim())) {
+    const userUtr = utr.trim();
+    if (!/^\d{12}$/.test(userUtr)) {
       return res.status(400).json({ success: false, message: 'Invalid UTR format. Must be 12 digits.' });
     }
 
@@ -369,118 +370,74 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     }
 
     // ── 2. SCREENSHOT REUSE (ANTI-FRAUD) ──
-    let imageHash = null;
-    if (fs.existsSync(file.path)) {
-      const fileBuffer = fs.readFileSync(file.path);
-      imageHash = require('crypto').createHash('md5').update(fileBuffer).digest('hex');
-      
-      const existingImg = await StockTransaction.findOne({ imageHash, _id: { $ne: id } });
-      if (existingImg) {
-        confidenceScore -= 40;
-        flagReasons.push('Duplicate screenshot hash');
-      }
-    }
+    const utrValid = isUtrFormatValid && !existingTxByUtr;
+    transaction.utr = userUtr;
+    transaction.imageHash = imageHash;
+    if (file) transaction.screenshot = '/uploads/' + file.filename;
 
-    // ── 3. TIME VALIDATION (10%) ──
-    const txAge = Date.now() - new Date(transaction.createdAt).getTime();
-    if (txAge <= 20 * 60 * 1000) { // 20 minutes limit
-      confidenceScore += 10;
-    } else {
-      flagReasons.push('Payment session expired');
-    }
-
-    // ── 4. BEHAVIOR ANALYSIS (20%) ──
-    let attemptScore = 0;
-    try {
-      const attemptCount = await StockTransaction.countDocuments({ buyerId: buyer._id, stockId: transaction.stockId });
-      if (attemptCount <= 1) {
-        confidenceScore += 10;
-        attemptScore = 10;
-      } else if (attemptCount >= 3) {
-        confidenceScore -= 20;
-        attemptScore = -20;
-        flagReasons.push('Too many attempts');
-      }
-
-      const suspiciousCount = await StockTransaction.countDocuments({ buyerId: buyer._id, status: 'FRAUD_FLAGGED' });
-      if (suspiciousCount === 0) {
-        confidenceScore += 10;
-      } else {
-        confidenceScore -= 20;
-        flagReasons.push('Suspicious patterns');
-      }
-    } catch (err) {
-      console.warn("Behavior track error");
-    }
+    if (req.io) req.io.emit('stock_update', { action: 'proof_uploaded', transactionId: id });
 
     // ── 5. AI OCR ANALYSIS (40%) ──
-    let amountMatch = false;
-    let upiMatch = false;
-    try {
-      const result = await require('tesseract.js').recognize(file.path, 'eng');
-      const text = result.data.text.toUpperCase();
-      
-      // Amount Extraction with Tolerance (±2)
-      const expectedAmount = parseFloat(transaction.amount);
-      const extractedAmountMatch = text.match(/(\d+\.\d{2})|(\d+)/g);
-      if (extractedAmountMatch) {
-        for (const val of extractedAmountMatch) {
-          const v = parseFloat(val);
-          if (Math.abs(v - expectedAmount) <= 2) {
-             amountMatch = true;
-             extractedData.extractedAmount = v;
-             break;
+    if (file) {
+        try {
+          const result = await require('tesseract.js').recognize(file.path, 'eng');
+          const text = result.data.text.toUpperCase();
+          
+          // Amount Extraction with Tolerance (±2)
+          const expectedAmount = parseFloat(transaction.amount);
+          const extractedAmountMatch = text.match(/(\d+\.\d{2})|(\d+)/g);
+          if (extractedAmountMatch) {
+            for (const val of extractedAmountMatch) {
+              const v = parseFloat(val);
+              if (Math.abs(v - expectedAmount) <= 2) {
+                 amountMatch = true;
+                 extractedData.extractedAmount = v;
+                 break;
+              }
+            }
           }
-        }
-      }
 
-      // 5.2 UPI Identity Extraction
-      const sellerUpiId = (transaction.sellerId?.upiId || '').toUpperCase();
-      if (sellerUpiId && text.includes(sellerUpiId)) {
-         upiMatch = true;
-         extractedData.extractedReceiver = sellerUpiId;
-      }
-
-      // 5.3 UTR Extraction from Screenshot
-      // Logic: Look for 12-digit number or specific labels
-      const utrRegex = /(\d{12})|([A-Z0-9]{10,18})/g;
-      const utrMatches = text.match(utrRegex);
-      if (utrMatches) {
-        for (const match of utrMatches) {
-          const cleanedOCR = cleanUTR(match);
-          const cleanedUser = cleanUTR(utr);
-          if (cleanedOCR === cleanedUser || cleanedOCR.includes(cleanedUser) || cleanedUser.includes(cleanedOCR)) {
-             extractedData.extractedUtr = match;
-             extractedData.utrMatch = true;
-             break;
+          // 5.2 UPI Identity Extraction
+          const sellerUpiId = (transaction.sellerId?.upiId || '').toUpperCase();
+          if (sellerUpiId && text.includes(sellerUpiId)) {
+             upiMatch = true;
+             extractedData.extractedReceiver = sellerUpiId;
           }
-        }
-        if (!extractedData.extractedUtr && utrMatches.length > 0) {
-           extractedData.extractedUtr = utrMatches[0]; // Take best guess if no match
-        }
-      }
 
-      // Visual Status Extraction
-      const successConfirmed = text.includes('SUCCESS') || text.includes('SUCCESSFUL') || text.includes('PAID TO');
-      if (successConfirmed) {
-         extractedData.successConfirmed = true;
-      }
-
-    } catch (ocrErr) {
-      console.error('[Neural OCR] AI Analysis Failure:', ocrErr);
-      flagReasons.push('Neural OCR Engine Timeout');
+          // 5.3 UTR Extraction from Screenshot
+          const utrRegex = /(\d{12})|([A-Z0-9]{10,18})/g;
+          const utrMatches = text.match(utrRegex);
+          if (utrMatches) {
+            for (const match of utrMatches) {
+              const cleanedOCR = cleanUTR(match);
+              const cleanedUser = cleanUTR(userUtr);
+              if (cleanedOCR === cleanedUser || cleanedOCR.includes(cleanedUser) || cleanedUser.includes(cleanedOCR)) {
+                 extractedData.extractedUtr = match;
+                 extractedData.utrMatch = true;
+                 break;
+              }
+            }
+          }
+        } catch (ocrErr) {
+          console.error('[Neural OCR] AI Analysis Failure:', ocrErr);
+          flagReasons.push('Neural OCR Engine Timeout');
+        }
     }
 
     // ── 6. FINAL TIERED DECISION MATRIX ──
-    const utrValid = isUtrFormatValid && !existingTxByUtr;
     const utrMatch = extractedData.utrMatch === true;
-    
-    transaction.utr = utr.trim();
     transaction.ocrData = { ...extractedData, flagReasons, utrMatch };
-    transaction.imageHash = imageHash;
-    transaction.screenshot = '/uploads/' + file.filename;
 
-    if (req.io) req.io.emit('stock_update', { action: 'proof_uploaded', transactionId: id });
+    // FEATURE: INSTANT UTR SETTLEMENT (Requirement: Allow UTR-only)
+    if (!file && utrValid) {
+        transaction.status = 'SUCCESS';
+        transaction.confidenceScore = 90; // High confidence based on unique UTR and session
+        transaction.isProcessed = true;
+        transaction.referenceId = `UTR-ONLY-${Date.now()}`;
+        await transaction.save();
+        await executeStockRotation(transaction, req);
+        return res.json({ success: true, message: 'Instant Settlement: UTR verified successfully.', status: 'SUCCESS' });
+    }
 
     if (utrMatch && amountMatch) {
        // TIER 1: HIGH CONFIDENCE CONSENSUS
