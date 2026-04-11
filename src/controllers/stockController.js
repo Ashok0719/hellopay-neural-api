@@ -467,6 +467,8 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     transaction.imageHash = imageHash;
     transaction.screenshot = '/uploads/' + file.filename;
 
+    if (req.io) req.io.emit('stock_update', { action: 'proof_uploaded', transactionId: id });
+
     if (utrMatch && amountMatch) {
        // TIER 1: HIGH CONFIDENCE CONSENSUS
        transaction.status = 'SUCCESS';
