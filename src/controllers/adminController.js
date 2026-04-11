@@ -262,18 +262,49 @@ const updateUserBalance = async (req, res) => {
         console.warn('[Audit Warning] Transaction record creation failed, but balance was updated.');
       }
       
-      // Neural Task Yield sync
-      try {
-        await updateTaskProgress(user, delta);
-      } catch (e) {
-        console.warn('[Audit Warning] Task progress sync failed.');
-      }
-    } else if (delta < 0) {
-      user.totalWithdrawn = (user.totalWithdrawn || 0) + Math.abs(delta);
-    }
+      // Neural Pulse: Referral Commission Injection
+      if (user.referredBy) {
+        try {
+          const referrer = await User.findById(user.referredBy);
+          if (referrer) {
+            const commPercent = referrer.referralPercent || config?.referralCommissionPercent || 5;
+            const commission = Number((delta * commPercent / 100).toFixed(2));
+            
+            if (commission > 0) {
+              referrer.walletBalance = Number((referrer.walletBalance + commission).toFixed(2));
+              referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commission).toFixed(2));
+              await referrer.save();
 
-    // Single save for atomicity
-    await user.save();
+              // Log the commission for transparency
+              await Transaction.create({
+                senderId: user._id,
+                receiverId: referrer._id,
+                type: 'referral_commission',
+                amount: commission,
+                status: 'SUCCESS',
+                description: `Neural Commission: Manual credit to ${user.name}`
+              });
+
+              // Rebuild referrers stocks (auto-liquidation sync)
+              await rebuildVirtualSplits(referrer._id, referrer.walletBalance, config);
+
+              // Signal the referrer's node
+              if (req.io) {
+                req.io.emit('userStatusChanged', { 
+                  userId: referrer._id, 
+                  walletBalance: referrer.walletBalance,
+                  referralEarnings: referrer.referralEarnings 
+                });
+              }
+            }
+          }
+        } catch (refErr) {
+          console.warn('[Referral Fault] Commission injection failed:', refErr.message);
+        }
+      }
+
+      // Single save for atomicity (User balance & Reward)
+      await user.save();
     console.log(`[Neural Sync] Node ${id} balance updated: ${oldBalance} -> ${user.walletBalance}`);
 
     // Log the manual override in specific audit model
