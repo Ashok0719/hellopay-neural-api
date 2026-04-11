@@ -8,6 +8,21 @@ const Tesseract = require('tesseract.js');
 const StockTransaction = require('../models/StockTransaction');
 const crypto = require('crypto');
 
+const expireStaleOrders = async () => {
+  const staleLimit = new Date(Date.now() - 15 * 60 * 1000); // 15 Minutes
+  try {
+     const staleCount = await StockTransaction.updateMany(
+        { status: 'PENDING_PAYMENT', createdAt: { $lt: staleLimit } },
+        { status: 'FAILED' }
+     );
+     if (staleCount.modifiedCount > 0) {
+        console.log(`[Neural Cleanup] Expired ${staleCount.modifiedCount} stale rotation orders.`);
+     }
+  } catch (err) {
+     console.error('[Neural Cleanup] Error:', err);
+  }
+};
+
 // Helper to get system config or default
 const getSystemConfig = async () => {
   let config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
@@ -35,6 +50,9 @@ const getSystemConfig = async () => {
 // @route   POST /api/wallet/match-p2p
 const matchP2P = async (req, res) => {
   try {
+    // Neural Cleanup: Expired Signals
+    await expireStaleOrders();
+
     const { amount } = req.body;
     const buyerId = req.user._id;
 
@@ -415,6 +433,10 @@ const neuralVerifyPayment = async (req, res) => {
     // Final Validation Logic
     const isAutoVerified = (amountMatch && (utrMatch || upiMatch));
     const screenshotPath = `/uploads/${file.filename}`;
+    const flagReasons = [];
+    if (!amountMatch) flagReasons.push('AMOUNT_MISMATCH');
+    if (!utrMatch) flagReasons.push('UTR_NOT_FOUND_IN_IMAGE');
+    if (!upiMatch) flagReasons.push('RECEIVER_UPI_MISMATCH');
 
     // Update Rotation Record if exists
     if (rotationTx) {
@@ -422,14 +444,22 @@ const neuralVerifyPayment = async (req, res) => {
       rotationTx.screenshot = screenshotPath;
       rotationTx.status = isAutoVerified ? 'SUCCESS' : 'PENDING_VERIFICATION';
       rotationTx.confidenceScore = isAutoVerified ? 100 : 50;
+      rotationTx.ocrData = { 
+          rawText: text.substring(0, 1000), 
+          matches: { amountMatch, utrMatch, upiMatch },
+          targetUpiId 
+      };
+      rotationTx.flagReasons = flagReasons;
       await rotationTx.save();
     }
 
     if (!isAutoVerified) {
+       console.warn(`[Neural Engine] Auto-Verification Failed. Flags: ${flagReasons.join(', ')}`);
        return res.status(200).json({ 
          success: false,
-         message: 'Neural verification signature is unclear. Your proof has been submitted for manual administration review.',
-         results: { amountMatch, utrMatch, upiMatch, targetUpiId }
+         status: 'PENDING_REVIEW',
+         message: 'Neural verification signature is unclear or mismatched. Your proof has been submitted for manual administration review.',
+         results: { amountMatch, utrMatch, upiMatch, targetUpiId, flagReasons }
        });
     }
 
