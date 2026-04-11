@@ -419,10 +419,24 @@ const neuralVerifyPayment = async (req, res) => {
       }
       amountMatch = amountMatchTarget;
 
-      // UTR Extraction (High Precision Alphanumeric Comparison)
+      // UTR / Transaction ID Extraction (High Precision Alphanumeric Comparison)
       const cleanUtr = utr.toUpperCase().replace(/[^A-Z0-9]/g, '');
       if (alphanumericText.includes(cleanUtr)) {
           utrMatch = true;
+      }
+      
+      // Secondary Transaction ID check (for UPI Txn IDs that might differ from UTR)
+      if (!utrMatch) {
+          const txnIdMatches = text.match(/(?:TXN|TRANS|ID)\s*:?\s*([A-Z0-9]{10,})/g);
+          if (txnIdMatches) {
+              for (let match of txnIdMatches) {
+                  const cleanedMatch = match.replace(/[^A-Z0-9]/g, '');
+                  if (cleanedMatch.includes(cleanUtr) || cleanUtr.includes(cleanedMatch)) {
+                      utrMatch = true;
+                      break;
+                  }
+              }
+          }
       }
 
       // Dynamic Receiver Verification (Resilient to special character noise)
