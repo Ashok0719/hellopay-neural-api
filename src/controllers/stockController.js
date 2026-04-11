@@ -90,7 +90,17 @@ exports.getStocks = async (req, res) => {
       .populate('selectedBy', 'name')
       .sort({ isPinned: -1, createdAt: 1 }); // Pinned First, then FIFO
 
-    // Feature: Marketplace Visibility (Neural Toggle)
+    // Neural Self-Healing: Shorten legacy long IDs in the pool
+    for (const s of stocks) {
+      if (s.stockId.length > 8) {
+         const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+         let newId = '';
+         for (let j = 0; j < 5; j++) newId += chars.charAt(Math.floor(Math.random() * chars.length));
+         s.stockId = newId;
+         await s.save().catch(e => console.error('Healing failed:', e));
+      }
+    }
+
     const filtered = stocks.filter(s => {
       // Always show if owner is verified or if owner has explicitly opened selling
       return s.ownerId && s.ownerId.isOpenSelling;
