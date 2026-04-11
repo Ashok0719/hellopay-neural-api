@@ -103,7 +103,7 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
     
     for (let i = 0; i < chunks.length; i++) {
       stocksToCreate.push({
-        stockId: `STK${timestamp}${i}${Math.floor(Math.random() * 10000)}`,
+        stockId: `NODE ${Math.floor(Math.random() * 90000 + 10000)}`,
         amount: chunks[i],
         ownerId: userId,
         ownerUpiId: user.upiId || 'admin@upi',
