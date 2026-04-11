@@ -84,11 +84,11 @@ exports.getStocks = async (req, res) => {
     );
 
     const stocks = await Stock.find({ 
-      status: { $ne: 'SOLD' }
+      status: 'AVAILABLE'
     })
       .populate('ownerId', 'name upiId qrCode userIdNumber isOpenSelling')
       .populate('selectedBy', 'name')
-      .sort({ isPinned: -1, createdAt: -1 });
+      .sort({ createdAt: 1 }); // FIFO: Oldest First
 
     // Feature: Marketplace Visibility (Neural Toggle)
     const filtered = stocks.filter(s => {
@@ -110,30 +110,33 @@ exports.selectStock = async (req, res) => {
     const { stockId } = req.body;
     const user = req.user;
 
-    const stock = await Stock.findById(stockId);
-    if (!stock) return res.status(404).json({ success: false, message: 'Stock Node Not Found' });
-
-    // Check if already locked by someone else
-    if (stock.status === 'LOCKED' && 
-        stock.selectedBy && 
-        stock.selectedBy.toString() !== user._id.toString() && 
-        stock.selectionExpires > new Date()) {
+    // Atomic Neural Lock (FIFO Concurrency Control)
+    const selectionExpires = new Date(Date.now() + 60 * 1000);
+    const lockedStock = await Stock.findOneAndUpdate(
+      { 
+        _id: stockId, 
+        status: 'AVAILABLE'
+      },
+      { 
+        $set: { 
+          status: 'LOCKED', 
+          selectedBy: user._id, 
+          selectionExpires: selectionExpires,
+          lockedUntil: selectionExpires 
+        } 
+      },
+      { new: true }
+    );
+    
+    if (!lockedStock) {
       return res.status(400).json({ 
         success: false, 
-        message: 'This stock is already selected by another user',
-        selectedBy: stock.selectedBy
+        message: 'This stock node has just been claimed by another user in the queue' 
       });
     }
 
-    // Refresh/Create Selection Lock (1 Minute)
-    stock.status = 'LOCKED';
-    stock.selectedBy = user._id;
-    stock.selectionExpires = new Date(Date.now() + 60 * 1000);
-    stock.lockedUntil = stock.selectionExpires; 
-    await stock.save();
-
     req.io.emit('stock_update', { action: 'refresh' });
-    res.json({ success: true, message: 'Stock selected/locked for 1 minute', stock });
+    res.json({ success: true, message: 'Neural position secured for 60 seconds', stock: lockedStock });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
