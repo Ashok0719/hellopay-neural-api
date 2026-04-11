@@ -826,11 +826,32 @@ const bulkUserAction = async (req, res) => {
   }
 };
 
+const bulkTransactionAction = async (req, res) => {
+  try {
+    const { ids, action } = req.body;
+    if (!ids || !Array.isArray(ids)) return res.status(400).json({ message: 'Invalid entity set' });
+
+    if (action === 'delete') {
+      await Transaction.deleteMany({ _id: { $in: ids } });
+      await StockTransaction.deleteMany({ _id: { $in: ids } });
+    }
+
+    if (req.io) {
+      req.io.emit('stock_update', { action: 'refresh' });
+    }
+
+    res.json({ success: true, message: `Neural Bulk ${action} completed for ${ids.length} records.` });
+  } catch (err) {
+    res.status(500).json({ message: 'Neural Bulk sequence failed' });
+  }
+};
+
 module.exports = { 
   getConfig, updateConfig, getAnalytics, getAllUsers, toggleUserBlock, 
   updateUserBalance, deleteUser, getAllTransactions, reviewTransaction, 
   initializeStock, adminVerifyStockTransaction, getAllStocks, toggleStockPin,
   deleteStock, deleteTransaction, resplitUserWallet, overrideWalletSplits,
   getFraudDashboard, updateUserPercents,
-  bulkUserAction
+  bulkUserAction,
+  bulkTransactionAction
 };

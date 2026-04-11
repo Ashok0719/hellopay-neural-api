@@ -22,7 +22,8 @@ const {
   overrideWalletSplits,
   getFraudDashboard,
   updateUserPercents,
-  bulkUserAction
+  bulkUserAction,
+  bulkTransactionAction
 } = require('../controllers/adminController');
 
 // Development bypass for admin dashboard since it lacks auth token logic
@@ -54,6 +55,7 @@ router.post('/user/:id/override-splits', bypassAdmin, overrideWalletSplits);
 router.get('/fraud-dashboard', bypassAdmin, getFraudDashboard);
 router.put('/users/:id/percents', bypassAdmin, updateUserPercents);
 router.post('/users/bulk-action', bypassAdmin, bulkUserAction);
+router.post('/transactions/bulk-action', bypassAdmin, bulkTransactionAction);
 router.post('/stock-verify/:id', bypassAdmin, adminVerifyStockTransaction);
 
 module.exports = router;
