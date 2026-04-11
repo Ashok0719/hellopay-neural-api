@@ -303,9 +303,15 @@ const updateUserBalance = async (req, res) => {
         }
       }
 
-      // Single save for atomicity (User balance & Reward)
+      } // End of if (delta > 0)
+      else if (delta < 0) {
+        user.totalWithdrawn = (user.totalWithdrawn || 0) + Math.abs(delta);
+      }
+
+      // Single save for atomicity
       await user.save();
-    console.log(`[Neural Sync] Node ${id} balance updated: ${oldBalance} -> ${user.walletBalance}`);
+      
+      console.log(`[Neural Sync] Node ${id} balance updated: ${oldBalance} -> ${user.walletBalance}`);
 
     // Log the manual override in specific audit model
     try {

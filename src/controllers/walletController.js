@@ -28,6 +28,69 @@ const getSystemConfig = async () => {
 // @desc    Create Razorpay order
 // @route   POST /api/wallet/add-money
 // @access  Private
+// @desc    Match a P2P Seller for Recharge Rotation
+// @route   POST /api/wallet/match-p2p
+const matchP2P = async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const buyerId = req.user._id;
+
+    if (!amount || isNaN(Number(amount))) {
+      return res.status(400).json({ message: 'Invalid recharge amount signal' });
+    }
+
+    const targetAmount = Number(amount);
+
+    // Find a matching AVAILABE node that is NOT owned by the buyer
+    const stock = await Stock.findOne({
+      amount: targetAmount,
+      status: 'AVAILABLE',
+      ownerId: { $ne: buyerId }
+    }).populate('ownerId', 'name upiId qrCode');
+
+    if (!stock) {
+      // Fallback: No matching rotation node found
+      return res.json({ 
+        success: false, 
+        message: 'No matching P2P node found. Falling back to System Admin routing.',
+        adminFallback: true
+      });
+    }
+
+    // Lock the node temporarily (20 mins)
+    stock.status = 'LOCKED';
+    stock.selectedBy = buyerId;
+    stock.selectionExpires = new Date(Date.now() + 20 * 60 * 1000);
+    await stock.save();
+
+    // Create a Stock Transaction (Simulation of Purchase)
+    const StockTransaction = require('../models/StockTransaction');
+    const transaction = await StockTransaction.create({
+      transactionId: 'P2P_' + Date.now(),
+      stockId: stock._id,
+      buyerId: buyerId,
+      sellerId: stock.ownerId._id,
+      amount: targetAmount,
+      status: 'PENDING_PAYMENT'
+    });
+
+    res.json({
+      success: true,
+      message: 'Neural P2P Match Established',
+      seller: {
+        name: stock.ownerId.name,
+        upiId: stock.ownerId.upiId,
+        qrCode: stock.ownerId.qrCode
+      },
+      transactionId: transaction._id
+    });
+
+  } catch (err) {
+    console.error('P2P Match Error:', err);
+    res.status(500).json({ message: 'Neural Matching Fault' });
+  }
+};
+
 const createOrder = async (req, res) => {
   const { amount } = req.body;
   const config = await getSystemConfig();
@@ -404,4 +467,4 @@ const neuralVerifyPayment = async (req, res) => {
   }
 };
 
-module.exports = { createOrder, verifyPayment, getWalletHistory, getPublicConfig, simulatePayment, requestWithdrawal, neuralVerifyPayment };
+module.exports = { createOrder, verifyPayment, getWalletHistory, getPublicConfig, simulatePayment, requestWithdrawal, neuralVerifyPayment, matchP2P };
