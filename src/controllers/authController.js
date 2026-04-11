@@ -343,10 +343,10 @@ const updateUserProfile = async (req, res) => {
         return res.status(403).json({ message: `Security Lock: UPI can only be changed once in 24h. Please wait ${hoursLeft}h.` });
       }
 
-      // 3. Regex & Handle Validation
-      const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-      if (!upiRegex.test(finalUpi) || !finalUpi.endsWith('@freecharge')) {
-        return res.status(400).json({ message: 'Neural Fault: Only @freecharge handles are permitted.' });
+      // 3. Regex Validation (Universal Handle Support)
+      const upiRegex = /^[a-zA-Z0-9._-]{3,}@[a-zA-Z]{2,}$/;
+      if (!upiRegex.test(finalUpi)) {
+        return res.status(400).json({ message: 'Neural Fault: Invalid UPI ID format.' });
       }
 
       // 4. Unique UPI Check
@@ -525,12 +525,6 @@ const saveUpi = async (req, res) => {
       const upiRegex = /^[a-z0-9._-]{3,}@[a-z]{2,}$/;
       if (!upiRegex.test(upiId)) {
         return res.status(400).json({ success: false, message: 'Invalid Neural ID Format' });
-      }
-
-      const [username, handle] = upiId.split('@');
-      const validHandles = ['freecharge'];
-      if (!validHandles.includes(handle)) {
-        return res.status(400).json({ success: false, message: `Invalid Handler @${handle}` });
       }
 
       // Duplicate Check

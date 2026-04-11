@@ -584,18 +584,18 @@ const neuralVerifyPayment = async (req, res) => {
 
 const verifySmsPayment = async (req, res) => {
   try {
-    const { amount, utr, rawMessage, source } = req.body;
+    const { amount, utr, source, deviceId } = req.body;
+    const config = await getSystemConfig();
     
-    console.log(`[APK SMS Listener] Received Signal: ₹${amount}, UTR: ${utr} (${source})`);
+    console.log(`[Neural Signal] Incoming verifying from ${source}: ₹${amount}, UTR: ${utr}`);
     
-    // 1. Security Check: Prevent Duplicate UTR
-    const duplicate = await Transaction.findOne({ referenceId: utr });
-    if (duplicate) {
-       console.warn(`[APK SMS] Duplicate signal rejected: ${utr}`);
-       return res.status(400).json({ message: 'Duplicate Transaction ID detected' });
+    // 1. DUPLICATE CHECK (Rule 1: Never trust twice)
+    const exists = await Transaction.findOne({ referenceId: utr });
+    if (exists) {
+       return res.status(400).json({ success: false, message: "Security Alert: Duplicate UTR Signal Blocked." });
     }
 
-    // 2. Locate Pending Rotation (Requirement: Within last 5 minutes)
+    // 2. LOCATE ACTIVE SESSION (Rule 5: Exact Binding)
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     const rotationTx = await StockTransaction.findOne({
        status: 'PENDING_PAYMENT',
@@ -603,60 +603,65 @@ const verifySmsPayment = async (req, res) => {
     }).populate('buyerId sellerId');
 
     if (!rotationTx) {
-       console.warn(`[APK SMS] No matching active rotation within 5min window.`);
-       return res.status(200).json({ success: false, message: 'Signal logged but no active node found.' });
+       return res.status(404).json({ success: false, message: "Signal Mismatch: No active rotation session found within 5 min window." });
     }
 
-    // 2.1 Feature: Amount Tolerance Check (Rule 3)
-    const expectedAmount = rotationTx.amount;
+    // 3. AMOUNT MATCHING (Rule 3: ₹1 Tolerance)
     const paidAmount = Number(amount);
-    if (Math.abs(paidAmount - expectedAmount) > 1) {
-       console.error(`[APK SMS] Amount Mismatch Blocked: Expected ₹${expectedAmount}, Paid ₹${paidAmount}`);
-       return res.status(400).json({ success: false, message: 'Payment Amount Mismatch. Identity check failed.' });
+    if (Math.abs(rotationTx.amount - paidAmount) > 1) {
+       return res.status(400).json({ success: false, message: "Amount Mismatch: Neural Engine detected deviation > ₹1." });
     }
 
-    const userId = rotationTx.buyerId._id;
-    const user = rotationTx.buyerId;
-    const seller = rotationTx.sellerId;
-    const { cashback } = calculateFinancials(rotationTx.amount, config);
-
-    // 3. Execution: Success Flow
-    user.walletBalance += rotationTx.amount;
-    user.rewardBalance += cashback;
-    user.totalRewards += cashback;
-    user.totalDeposited += rotationTx.amount;
-    await user.save();
-
-    // Log the transaction with Device Binding
-    const transaction = await Transaction.create({
-      senderId: userId,
-      receiverId: userId,
-      type: 'add_money',
-      amount: rotationTx.amount,
-      status: 'SUCCESS',
-      transactionId: utr,
-      referenceId: utr,
-      deviceId: req.body.deviceId || 'UNKNOWN_APK',
-      ipAddress: req.ip,
-      description: `APK Auto-SMS Verified: ₹${rotationTx.amount} (Device: ${req.body.deviceId || 'N/A'})`
-    });
-
-    rotationTx.utr = utr;
-    rotationTx.status = 'SUCCESS';
-    rotationTx.confidenceScore = 100;
-    await rotationTx.save();
-
-    // 4. Update Marketplace Nodes
-    await syncUserStocks(User, Stock, userId, user.walletBalance, config);
-    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
-
-    console.log(`[APK SMS Success] Multi-vector verification complete for User ${user.userIdNumber}. Asset updated.`);
+    // 4. SOURCE LOGIC (Rule 1 & 2)
+    const isHardTruth = source === 'sms_auto'; // SMS is final truth
     
-    res.json({ success: true, message: 'APK Signal Verified' });
+    if (isHardTruth) {
+       const userId = rotationTx.buyerId._id;
+       const user = await User.findById(userId);
+       const seller = await User.findById(rotationTx.sellerId._id);
+       const { cashback } = calculateFinancials(rotationTx.amount, config);
 
+       // Execute Atomic Credit
+       user.walletBalance += rotationTx.amount;
+       user.rewardBalance += cashback;
+       await user.save();
+
+       // Liquidity Rebalance (Seller Node)
+       seller.walletBalance = Math.max(0, seller.walletBalance - rotationTx.amount);
+       await seller.save();
+
+       // Finalize Transaction Audit
+       await Transaction.create({
+         senderId: userId,
+         amount: rotationTx.amount,
+         type: 'add_money',
+         status: 'SUCCESS',
+         referenceId: utr,
+         deviceId: deviceId || 'APK_SIGNAL_BOUND',
+         description: `Neural SMS Verified (Source: ${source})`
+       });
+
+       rotationTx.status = 'SUCCESS';
+       rotationTx.utr = utr;
+       await rotationTx.save();
+
+       // Sync Nodes
+       await syncUserStocks(User, Stock, userId, user.walletBalance, config);
+       await syncUserStocks(User, Stock, seller._id, seller.walletBalance, config);
+       
+       if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+
+       return res.json({ success: true, message: "Neural Signal Verified. Asset Merged." });
+    } else {
+       // Secondary Confirmation (Soft Verified)
+       rotationTx.utr = utr;
+       rotationTx.status = 'PENDING_REVIEW';
+       await rotationTx.save();
+       return res.json({ success: true, message: "Intent Signal Logged. Awaiting SMS Primary Truth." });
+    }
   } catch (err) {
-    console.error('APK SMS Verification Error:', err);
-    res.status(500).json({ message: 'Internal Server Error' });
+    console.error('Neural Logic Fault:', err);
+    res.status(500).json({ success: false, message: "Neural Logic Fault" });
   }
 };
 
