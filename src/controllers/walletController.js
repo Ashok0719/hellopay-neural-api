@@ -43,33 +43,6 @@ const executeWalletRecharge = async (transaction, config) => {
   return { user, cashback };
 };
 
-// Fastring Integration Helper
-const createFastringOrder = async (amount, userId, referenceId) => {
-  // Logic to interact with Fastring API
-  // Requirement: includes amount, user ID, order/reference ID
-  const fastringApiUrl = process.env.FASTRING_API_URL || 'https://api.fastring.app/v1/payments';
-  const fastringApiKey = process.env.FASTRING_API_KEY;
-
-  try {
-     // Scenario: Fastring expects a payload and returns a payment URL
-     // We will generate a unique order ID for Fastring tracking
-     const fastringOrderId = `FR_${referenceId}_${Date.now().toString().slice(-4)}`;
-     
-     // For this integration, we'll return the URL the frontend should redirect to
-     // If no API Key is provided, we simulate a direct payment link
-     const paymentUrl = `${process.env.FASTRING_PAY_BASE_URL || 'https://fastring.app/pay'}?amount=${amount}&userId=${userId}&orderId=${referenceId}&fastId=${fastringOrderId}&callback=${encodeURIComponent(process.env.FASTRING_CALLBACK_URL || 'https://hellopayapp.com/api/wallet/fastring-callback')}`;
-
-     return { 
-        id: fastringOrderId, 
-        payment_url: paymentUrl,
-        success: true 
-     };
-  } catch (err) {
-     console.error('Fastring Order Fault:', err);
-     throw new Error('Fastring payment initialization failed');
-  }
-};
-
 // Optimized Neural OCR Engine (Initialized at startup for Instant Verification)
 let ocrWorker = null;
 const initOCR = async () => {
@@ -99,7 +72,6 @@ const expireStaleOrders = async () => {
 const getSystemConfig = async () => {
   let config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
   if (!config) {
-    // Default fallback (though it should be initialized in index.js)
     config = {
       globalCashbackPercent: 4,
       stockPlans: [],
@@ -115,9 +87,61 @@ const getSystemConfig = async () => {
   return config;
 };
 
-// @desc    Create Razorpay order
-// @route   POST /api/wallet/add-money
-// @access  Private
+const createFastringOrderSession = async (amount, userId, referenceId) => {
+  // Logic to interact with Fastring API
+  const fastringOrderId = `FR_${referenceId}_${Date.now().toString().slice(-4)}`;
+  const paymentUrl = `${process.env.FASTRING_PAY_BASE_URL || 'https://fastring.app/pay'}?amount=${amount}&userId=${userId}&orderId=${referenceId}&fastId=${fastringOrderId}&callback=${encodeURIComponent(process.env.FASTRING_CALLBACK_URL || 'https://api.hellopayapp.com/api/wallet/fastring-callback')}`;
+
+  return { 
+     id: fastringOrderId, 
+     payment_url: paymentUrl,
+     success: true 
+  };
+};
+
+/**
+ * @desc    Initialize Fastring Payment for Wallet Recharge
+ * @route   POST /api/wallet/create-fastring-payment
+ * @access  Private
+ */
+const createOrder = async (req, res) => {
+  try {
+    const { amount } = req.body;
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: 'Invalid recharge amount signal' });
+    }
+
+    const config = await getSystemConfig();
+    const referenceId = Math.random().toString(36).substring(7).toUpperCase();
+
+    // Create a pending transaction record
+    const transaction = await Transaction.create({
+      senderId: req.user._id,
+      amount: Number(amount),
+      status: 'PENDING',
+      type: 'RECHARGE',
+      referenceId: referenceId
+    });
+
+    const fastringSession = await createFastringOrderSession(amount, req.user._id, transaction._id);
+    
+    // Bind Fastring ID to our transaction
+    transaction.fastringOrderId = fastringSession.id;
+    await transaction.save();
+
+    res.json({
+      success: true,
+      orderId: transaction._id,
+      fastringOrderId: fastringSession.id,
+      paymentUrl: fastringSession.payment_url,
+      amount: amount
+    });
+  } catch (err) {
+    console.error('Wallet Ignition Error:', err);
+    res.status(500).json({ message: 'Neural Ignition Failed: Payment Gateway Unreachable' });
+  }
+};
+
 // @desc    Match a P2P Seller for Recharge Rotation
 // @route   POST /api/wallet/match-p2p
 const matchP2P = async (req, res) => {
