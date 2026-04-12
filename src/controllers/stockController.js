@@ -113,24 +113,48 @@ exports.buyStock = async (req, res) => {
 
 exports.createStockOrder = async (req, res) => {
   try {
-    const { amount, stockId } = req.body;
-    const order = await createFastringStockOrder(amount, req.user._id, stockId);
+    const { stockId } = req.body;
     
-    // Create pending stock transaction
+    // Neural Link: Retrieve the existing split unit registry
+    const stock = await Stock.findById(stockId);
+    if (!stock) {
+       return res.status(404).json({ message: 'Neural Node Not Found: The split unit has expired or been claimed.' });
+    }
+
+    if (stock.status !== 'AVAILABLE') {
+       return res.status(400).json({ message: 'Neural Node Unavailable: This fragment is currently locked for another transaction.' });
+    }
+
+    const amount = stock.amount;
+    const sellerId = stock.ownerId;
+    const transactionId = `HP_ROT_${Date.now()}_${Math.random().toString(36).slice(-4).toUpperCase()}`;
+
+    const order = await createFastringStockOrder(amount, req.user._id, transactionId);
+    
+    // Create pending stock transaction record
     const transaction = await StockTransaction.create({
+        transactionId: transactionId,
         buyerId: req.user._id,
+        sellerId: sellerId,
         stockId: stockId,
         amount: amount,
         status: 'PENDING_PAYMENT',
         fastringOrderId: order.id
     });
+
+    // Lock the stock node
+    stock.status = 'LOCKED';
+    stock.selectedBy = req.user._id;
+    stock.selectionExpires = new Date(Date.now() + 20 * 60 * 1000); // 20 min lock
+    await stock.save();
     
     res.json({ 
        success: true,
        orderId: order.id,
        paymentUrl: order.payment_url,
        amount: amount,
-       transactionId: transaction._id 
+       transactionId: transaction._id,
+       buyerName: req.user.name 
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
