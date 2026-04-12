@@ -364,12 +364,13 @@ exports.uploadPaymentScreenshot = async (req, res) => {
       flagReasons.push('Invalid UTR Format');
     }
 
-    const existingTxByUtr = await StockTransaction.findOne({ utr, _id: { $ne: id } });
-    if (!existingTxByUtr) {
-      confidenceScore += 15;
-    } else {
-      confidenceScore -= 50; 
-      flagReasons.push('UTR duplicate detected');
+    const existingTxByUtr = await StockTransaction.findOne({ utr, _id: { $ne: id }, status: { $ne: 'CANCELLED' } });
+    if (existingTxByUtr) {
+      transaction.status = 'FAILED';
+      transaction.utr = userUtr;
+      transaction.ocrData = { flagReasons: ['Fraud Signal: UTR Already Consumed'] };
+      await transaction.save();
+      return res.status(400).json({ success: false, message: 'Fraud Detected: This UTR has already been utilized by another node.' });
     }
 
     // ── 2. SCREENSHOT REUSE (ANTI-FRAUD) ──
