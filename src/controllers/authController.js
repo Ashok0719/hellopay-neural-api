@@ -606,6 +606,10 @@ const toggleSelling = async (req, res) => {
     user.isOpenSelling = !user.isOpenSelling;
     await user.save();
 
+    // Trigger Neural Sync to immediately add/remove marketplace listings
+    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+    await syncUserStocks(User, Stock, user._id, user.walletBalance, config || {});
+
     res.json({ 
       success: true, 
       isOpenSelling: user.isOpenSelling,
