@@ -14,7 +14,8 @@ const { executeWalletRecharge } = require('./walletController');
 // Fastring Integration Helper
 const createFastringStockOrder = async (amount, userId, referenceId) => {
   const fastringOrderId = `FR_STOCK_${referenceId}_${Date.now().toString().slice(-4)}`;
-  const paymentUrl = `${process.env.FASTRING_PAY_BASE_URL || 'https://fastring.app/pay'}?amount=${amount}&userId=${userId}&orderId=${referenceId}&fastId=${fastringOrderId}&type=STOCK&callback=${encodeURIComponent(process.env.FASTRING_CALLBACK_URL || 'https://api.hellopayapp.com/api/stocks/fastring-webhook')}`;
+  const baseUrl = process.env.FASTRING_PAY_BASE_URL || 'https://hellopay.fastspring.com/session';
+  const paymentUrl = `${baseUrl}/${fastringOrderId}?amount=${amount}&userId=${userId}&orderId=${referenceId}&type=STOCK`;
 
   return { 
      id: fastringOrderId, 

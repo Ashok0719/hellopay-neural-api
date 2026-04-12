@@ -84,7 +84,8 @@ const executeWalletRecharge = async (transaction, config) => {
 
 const createFastringOrderSession = async (amount, userId, referenceId) => {
   const fastringOrderId = `FR_${referenceId}_${Date.now().toString().slice(-4)}`;
-  const paymentUrl = `${process.env.FASTRING_PAY_BASE_URL || 'https://fastring.app/pay'}?amount=${amount}&userId=${userId}&orderId=${referenceId}&fastId=${fastringOrderId}&callback=${encodeURIComponent(process.env.FASTRING_CALLBACK_URL || 'https://api.hellopayapp.com/api/wallet/fastring-callback')}`;
+  const baseUrl = process.env.FASTRING_PAY_BASE_URL || 'https://hellopay.fastspring.com/session';
+  const paymentUrl = `${baseUrl}/${fastringOrderId}?amount=${amount}&userId=${userId}&orderId=${referenceId}`;
 
   return { 
      id: fastringOrderId, 
