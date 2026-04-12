@@ -61,7 +61,7 @@ const executeStockRotation = async (transaction, req) => {
 exports.getStocks = async (req, res) => {
   try {
     const stocks = await Stock.find({ status: 'AVAILABLE' }).populate('ownerId', 'name upiId');
-    res.json(stocks);
+    res.json({ stocks });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
