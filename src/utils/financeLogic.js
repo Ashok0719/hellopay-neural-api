@@ -55,6 +55,13 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
 
     // ALWAYS clear available stocks to prevent duplicates and ensure 1:1 balance mapping
     await StockModel.deleteMany({ ownerId: userId, status: 'AVAILABLE' });
+
+    // Neural Security Rule: Only sync to marketplace if user has manually opened their node for selling
+    if (!user.isOpenSelling) {
+       console.log(`[Neural Guard] Skipping stock sync for user ${userId} - Node is CLOSED.`);
+       return [];
+    }
+
     let currentAvailableSum = 0;
 
     const deficit = targetAmount - currentAvailableSum;
