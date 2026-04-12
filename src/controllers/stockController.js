@@ -668,3 +668,16 @@ exports.handleFastringWebhook = async (req, res) => {
 
   res.status(200).json({ status: 'ok' });
 };
+
+module.exports = {
+  getStocks,
+  generateVirtualSplits,
+  buyStock,
+  selectStock,
+  cancelSelection,
+  createStockOrder,
+  uploadPaymentScreenshot,
+  cancelStockTransaction,
+  getTransaction,
+  handleFastringWebhook
+};
