@@ -125,7 +125,13 @@ exports.createStockOrder = async (req, res) => {
         fastringOrderId: order.id
     });
     
-    res.json({ ...order, transactionId: transaction._id });
+    res.json({ 
+       success: true,
+       orderId: order.id,
+       paymentUrl: order.payment_url,
+       amount: amount,
+       transactionId: transaction._id 
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
