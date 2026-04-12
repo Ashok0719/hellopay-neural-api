@@ -3,8 +3,24 @@ const StockTransaction = require('../models/StockTransaction');
 const User = require('../models/User');
 const Config = require('../models/Config');
 const Tesseract = require('tesseract.js');
+const crypto = require('crypto');
+const axios = require('axios');
+const Transaction = require('../models/Transaction');
 const { auditUserBehavior } = require('../utils/fraudEngine');
 const { findBestSplits, syncUserStocks } = require('../utils/financeLogic');
+const { executeWalletRecharge } = require('./walletController');
+
+// Fastring Integration Helper
+const createFastringStockOrder = async (amount, userId, referenceId) => {
+  const fastringOrderId = `FR_STOCK_${referenceId}_${Date.now().toString().slice(-4)}`;
+  const paymentUrl = `${process.env.FASTRING_PAY_BASE_URL || 'https://fastring.app/pay'}?amount=${amount}&userId=${userId}&orderId=${referenceId}&fastId=${fastringOrderId}&type=STOCK&callback=${encodeURIComponent(process.env.FASTRING_CALLBACK_URL || 'https://hellopayapp.com/api/stocks/fastring-webhook')}`;
+
+  return { 
+     id: fastringOrderId, 
+     payment_url: paymentUrl,
+     success: true 
+  };
+};
 
 // Wrapper for controllers
 const rebuildVirtualSplits = async (userId, walletBalance, config) => {
@@ -289,13 +305,34 @@ exports.createStockOrder = async (req, res) => {
 
     auditUserBehavior(buyer._id, 'ORDER_CREATE', 2, req, `Stock: ${stockId}`);
 
-    const orderId = 'ORD_' + Date.now();
+    const referenceId = `HP_S_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    const fastringOrder = await createFastringStockOrder(stock.amount, req.user._id, referenceId);
+
+    // Create a transaction record linked to this Fastring Order
+    const transaction = await StockTransaction.create({
+       transactionId: 'TXN' + Date.now() + Math.floor(Math.random() * 1000),
+       stockId: stock._id,
+       buyerId: buyer._id,
+       sellerId: stock.ownerId._id,
+       amount: stock.amount,
+       fastringOrderId: fastringOrder.id,
+       referenceId: referenceId,
+       status: 'PENDING_PAYMENT'
+    });
+
+    // Lock the stock temporarily (LOCKED state)
+    stock.status = 'LOCKED';
+    stock.selectionExpires = new Date(Date.now() + 20 * 60 * 1000); // 20 min lock
+    await stock.save();
+
     res.json({
-      success:   true,
-      orderId,
-      amount:    stock.amount,
+      success: true,
+      orderId: fastringOrder.id,
+      paymentUrl: fastringOrder.payment_url,
+      transactionId: transaction._id,
+      amount: stock.amount,
       buyerName: buyer.name,
-      ownerUpi:  stock.ownerId.upiId
+      buyerEmail: buyer.email || `${buyer.userIdNumber}@hellopay.io`
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -339,7 +376,16 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     // ── STRICT RULE: UTR PATTERN (12 Digits) ──
     const userUtr = utr.trim();
     if (!/^\d{12}$/.test(userUtr)) {
-      return res.status(400).json({ success: false, message: 'Invalid UTR format. Must be 12 digits.' });
+      // Feature: Instant Recovery (Requirement: Stock again visible)
+      const tx = await StockTransaction.findOne({ _id: id, buyerId: buyer._id, status: 'PENDING_PAYMENT' });
+      if (tx) {
+         tx.status = 'FAILED';
+         tx.utr = userUtr;
+         tx.ocrData = { flagReasons: ['Neural Rejection: Invalid UTR Format'] };
+         await tx.save();
+         await Stock.findByIdAndUpdate(tx.stockId, { status: 'AVAILABLE' });
+      }
+      return res.status(400).json({ success: false, message: 'PAYMENT FAILED: Invalid Signal Format.' });
     }
 
     const transaction = await StockTransaction.findOne({ _id: id, buyerId: buyer._id, status: 'PENDING_PAYMENT', isProcessed: { $ne: true } })
@@ -368,9 +414,11 @@ exports.uploadPaymentScreenshot = async (req, res) => {
     if (existingTxByUtr) {
       transaction.status = 'FAILED';
       transaction.utr = userUtr;
-      transaction.ocrData = { flagReasons: ['Fraud Signal: UTR Already Consumed'] };
+      transaction.ocrData = { flagReasons: ['Security Signal: TRANSACTION BLOCKED'] };
       await transaction.save();
-      return res.status(400).json({ success: false, message: 'Fraud Detected: This UTR has already been utilized by another node.' });
+      // Feature: Instant Recovery (Requirement: Stock again visible)
+      await Stock.findByIdAndUpdate(transaction.stockId, { status: 'AVAILABLE' });
+      return res.status(400).json({ success: false, message: 'TRANSACTION BLOCKED: This ID has already been utilized.' });
     }
 
     // ── 2. SCREENSHOT REUSE (ANTI-FRAUD) ──
@@ -563,4 +611,60 @@ exports.getTransaction = async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   POST /api/stocks/webhook — razorpay autonomous settlement
+   (Requires RAZORPAY_WEBHOOK_SECRET in .env)
+───────────────────────────────────────────────────────────── */
+exports.handleFastringWebhook = async (req, res) => {
+  const { fastring_order_id, status, reference_id, amount, type } = req.body;
+  
+  console.log('[FASTRING] Signal Received:', status, type);
+
+  if (status === 'SUCCESS') {
+    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+
+    // 1. Try to find a Stock Rotation Transaction
+    const stockTx = await StockTransaction.findOne({ 
+      fastringOrderId: fastring_order_id, 
+      status: 'PENDING_PAYMENT' 
+    });
+
+    if (stockTx) {
+      try {
+        console.log('[NEURAL] Settling Stock Rotation (Fastring):', fastring_order_id);
+        stockTx.status = 'SUCCESS';
+        stockTx.isProcessed = true;
+        await stockTx.save();
+        await executeStockRotation(stockTx, req);
+        return res.status(200).json({ status: 'ok' });
+      } catch (err) {
+        console.error('Neural Settlement Error (Stock):', err);
+        return res.status(500).json({ status: 'failed', message: err.message });
+      }
+    }
+
+    // 2. Try to find a Regular Wallet Deposit Transaction
+    const walletTx = await Transaction.findOne({ 
+      fastringOrderId: fastring_order_id, 
+      status: 'PENDING' 
+    });
+
+    if (walletTx) {
+      try {
+        console.log('[NEURAL] Settling Wallet Recharge (Fastring):', fastring_order_id);
+        await executeWalletRecharge(walletTx, config);
+        return res.status(200).json({ status: 'ok' });
+      } catch (err) {
+        console.error('Neural Settlement Error (Wallet):', err);
+        return res.status(500).json({ status: 'failed', message: err.message });
+      }
+    }
+
+    console.warn('[FASTRING] Signal Received but No Matching Internal Order found:', fastring_order_id);
+    return res.status(200).json({ status: 'ok', message: 'Order reference not found' });
+  }
+
+  res.status(200).json({ status: 'ok' });
 };

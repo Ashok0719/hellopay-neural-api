@@ -61,6 +61,8 @@ const io = new Server(server, {
 console.log('--- HelloPay Neural Base Initializing ---');
 app.use(helmet({
   contentSecurityPolicy: false,
+  crossOriginOpenerPolicy: { policy: "unsafe-none" },
+  crossOriginEmbedderPolicy: false,
 })); 
 app.use(morgan('dev'));
 

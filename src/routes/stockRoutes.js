@@ -11,7 +11,8 @@ const {
   createStockOrder,
   uploadPaymentScreenshot,
   cancelStockTransaction,
-  getTransaction
+  getTransaction,
+  handleFastringWebhook
 } = require('../controllers/stockController');
 
 const {
@@ -34,6 +35,8 @@ router.post('/transactions/:id/upload',  protect, upload.single('screenshot'), u
 // Advanced Verification Module (Feature 9)
 router.post('/verify-utr', protect, verifyUtr);
 router.post('/verify-screenshot', protect, upload.single('screenshot'), verifyScreenshot);
+router.post('/fastring-webhook', handleFastringWebhook);
+router.post('/webhook', handleFastringWebhook);
 router.post('/save-upi', protect, upload.single('qrCode'), saveUpi);
 
 module.exports = router;
