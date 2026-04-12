@@ -175,6 +175,8 @@ exports.cancelStockTransaction = async (req, res) => {
         const stock = await Stock.findById(transaction.stockId);
         if (stock) {
             stock.status = 'AVAILABLE';
+            stock.selectedBy = null;
+            stock.selectionExpires = null;
             await stock.save();
         }
     }
