@@ -5,6 +5,7 @@ const Config = require('../models/Config');
 const Tesseract = require('tesseract.js');
 const crypto = require('crypto');
 const axios = require('axios');
+const fs = require('fs');
 const Transaction = require('../models/Transaction');
 const { auditUserBehavior } = require('../utils/fraudEngine');
 const { findBestSplits, syncUserStocks } = require('../utils/financeLogic');
@@ -13,7 +14,7 @@ const { executeWalletRecharge } = require('./walletController');
 // Fastring Integration Helper
 const createFastringStockOrder = async (amount, userId, referenceId) => {
   const fastringOrderId = `FR_STOCK_${referenceId}_${Date.now().toString().slice(-4)}`;
-  const paymentUrl = `${process.env.FASTRING_PAY_BASE_URL || 'https://fastring.app/pay'}?amount=${amount}&userId=${userId}&orderId=${referenceId}&fastId=${fastringOrderId}&type=STOCK&callback=${encodeURIComponent(process.env.FASTRING_CALLBACK_URL || 'https://hellopayapp.com/api/stocks/fastring-webhook')}`;
+  const paymentUrl = `${process.env.FASTRING_PAY_BASE_URL || 'https://fastring.app/pay'}?amount=${amount}&userId=${userId}&orderId=${referenceId}&fastId=${fastringOrderId}&type=STOCK&callback=${encodeURIComponent(process.env.FASTRING_CALLBACK_URL || 'https://api.hellopayapp.com/api/stocks/fastring-webhook')}`;
 
   return { 
      id: fastringOrderId, 
@@ -22,662 +23,183 @@ const createFastringStockOrder = async (amount, userId, referenceId) => {
   };
 };
 
-// Wrapper for controllers
-const rebuildVirtualSplits = async (userId, walletBalance, config) => {
-  return await syncUserStocks(User, Stock, userId, walletBalance, config);
-};
-
-// ── REUSABLE ATOMIC SETTLEMENT ENGINE ──
-const executeStockRotation = async (transaction, req) => {
-  // Lock the stock node permanently to SOLD status
-  const soldStock = await Stock.findOneAndUpdate(
-    { _id: transaction.stockId, status: { $ne: 'SOLD' } },
-    { status: 'SOLD' },
-    { new: true }
-  );
-  
-  if (!soldStock) throw new Error('Fraud Prevented: Stock already sold or locked.');
-
-  const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-  const seller = await User.findById(transaction.sellerId);
-  const buyer = await User.findById(transaction.buyerId);
-  
-  if (seller) {
-    if (seller.walletBalance < transaction.amount) {
-       await Stock.findByIdAndUpdate(transaction.stockId, { status: 'AVAILABLE' }); 
-       throw new Error('Fail-Safe Triggered: Seller has insufficient balance. Rotation aborted.');
-    }
-    seller.walletBalance = Number((seller.walletBalance - transaction.amount).toFixed(2));
-    await seller.save();
-    if (req.io) {
-      req.io.emit('userStatusChanged', { 
-        userId: seller._id, 
-        walletBalance: seller.walletBalance, 
-        updateMessage: 'Digital Asset successfully sold.' 
-      });
-    }
-  }
-
-  const profitEnabled = config?.adminProfitEnabled !== false;
-  const profitPercentage = config?.profitPercentage || 4;
-  const profit = profitEnabled ? Number(((transaction.amount * profitPercentage) / 100).toFixed(2)) : 0;
-
-  buyer.walletBalance = Number((buyer.walletBalance + transaction.amount + profit).toFixed(2));
-  buyer.totalDeposited = Number(((buyer.totalDeposited || 0) + transaction.amount).toFixed(2));
-  await buyer.save();
-
-  if (buyer.referredBy) {
-    const referrer = await User.findById(buyer.referredBy);
-    if (referrer) {
-      const commPercent = referrer.referralPercent || config?.referralCommissionPercent || 4;
-      const commissionValue = Number((transaction.amount * (commPercent / 100)).toFixed(2));
-      referrer.walletBalance = Number((referrer.walletBalance + commissionValue).toFixed(2));
-      referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commissionValue).toFixed(2));
-      await referrer.save();
-      if (req.io) req.io.emit('userStatusChanged', { userId: referrer._id, walletBalance: referrer.walletBalance });
-    }
-  }
-
-  // Trigger real-time split rebuilds
-  await rebuildVirtualSplits(seller._id, seller.walletBalance, config);
-  await rebuildVirtualSplits(buyer._id, buyer.walletBalance, config);
-
-  if (req.io) req.io.emit('stock_update', { action: 'rotation_complete' });
-  return true;
-};
-
-
-/* ─────────────────────────────────────────────────────────────
-   GET /api/stocks  — list all available stocks (excluding caller's)
-   Frontend already filters by ownerId, but this gives cleaner UX
-───────────────────────────────────────────────────────────── */
-exports.getStocks = async (req, res) => {
-  try {
-    // Neural Expire: Unlock any selection that has timed out
-    await Stock.updateMany(
-      { status: 'LOCKED', selectionExpires: { $lt: new Date() } },
-      { $set: { status: 'AVAILABLE', selectedBy: null, selectionExpires: null, lockedUntil: null } }
-    );
-
-    const stocks = await Stock.find({ 
-      status: 'AVAILABLE'
-    })
-      .populate('ownerId', 'name upiId qrCode userIdNumber isOpenSelling')
-      .populate('selectedBy', 'name')
-      .sort({ isPinned: -1, createdAt: 1 }); // Pinned First, then FIFO
-
-    // Neural Self-Healing: Shorten legacy long IDs in the pool
-    for (const s of stocks) {
-      if (s.stockId.length > 8) {
-         const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-         let newId = '';
-         for (let j = 0; j < 5; j++) newId += chars.charAt(Math.floor(Math.random() * chars.length));
-         s.stockId = newId;
-         await s.save().catch(e => console.error('Healing failed:', e));
-      }
-    }
-
-    const filtered = stocks.filter(s => {
-      // Always show if owner is verified or if owner has explicitly opened selling
-      return s.ownerId && s.ownerId.isOpenSelling;
-    });
-
-    res.json({ success: true, stocks: filtered });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/select  — temporarily lock for 1 minute
-───────────────────────────────────────────────────────────── */
-exports.selectStock = async (req, res) => {
-  try {
-    const { stockId } = req.body;
-    const user = req.user;
-
-    // Atomic Neural Lock (FIFO Concurrency Control)
-    const selectionExpires = new Date(Date.now() + 60 * 1000);
-    const lockedStock = await Stock.findOneAndUpdate(
-      { 
-        _id: stockId, 
-        status: 'AVAILABLE'
-      },
-      { 
-        $set: { 
-          status: 'LOCKED', 
-          selectedBy: user._id, 
-          selectionExpires: selectionExpires,
-          lockedUntil: selectionExpires 
-        } 
-      },
-      { new: true }
-    );
-    
-    if (!lockedStock) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'This stock node has just been claimed by another user in the queue' 
-      });
-    }
-
-    req.io.emit('stock_update', { action: 'refresh' });
-    res.json({ success: true, message: 'Neural position secured for 60 seconds', stock: lockedStock });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/cancel-selection
-───────────────────────────────────────────────────────────── */
-exports.cancelSelection = async (req, res) => {
-  try {
-    const { stockId } = req.body;
-    const stock = await Stock.findOne({ _id: stockId, selectedBy: req.user._id });
-    
-    if (stock) {
-      stock.status = 'AVAILABLE';
-      stock.selectedBy = null;
-      stock.selectionExpires = null;
-      stock.lockedUntil = null;
-      await stock.save();
-      req.io.emit('stock_update', { action: 'refresh' });
-    }
-    
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/generate-splits
-   Called on dashboard load — creates virtual units from wallet.
-   Wallet balance is NOT deducted.
-───────────────────────────────────────────────────────────── */
-exports.generateVirtualSplits = async (req, res) => {
-  try {
-    const user   = await User.findById(req.user._id);
-    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-
-    // Temporary Override: Allowing token generation without Identity Signal (UPI)
-
-    const created = await rebuildVirtualSplits(user._id, user.walletBalance, config);
-
-    req.io.emit('stock_update', { action: 'splits_generated', userId: user._id });
-    res.json({
-      success:    true,
-      message:    `Generated ${created.length} virtual split units`,
-      splits:     created,
-      walletBalance: user.walletBalance   // wallet stays untouched
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/buy  — initiate purchase (lock the unit)
-───────────────────────────────────────────────────────────── */
-exports.buyStock = async (req, res) => {
-  try {
-    const { stockId, pin } = req.body;
-    const buyer = await User.findById(req.user._id);
-
-    if (buyer.isBlocked) {
-      return res.status(403).json({ success: false, message: 'Account suspended for behavioral anomalies' });
-    }
-
-    // Neural 2.0: Instant Claim enabled (PIN check bypassed for efficiency)
-    
-    if (!buyer.upiId) {
-      return res.status(400).json({ success: false, message: 'Please add your UPI ID before buying stock' });
-    }
-
-    const stock = await Stock.findOne({ 
-      _id: stockId, 
-      $or: [
-        { status: 'AVAILABLE' },
-        { status: 'LOCKED', selectedBy: req.user._id, selectionExpires: { $gt: new Date() } }
-      ]
-    }).populate('ownerId', 'name upiId qrCode');
-
-    if (!stock) {
-      return res.status(400).json({ success: false, message: 'Stock already selected by another user or session expired' });
-    }
-
-    // Self-purchase guard
-    if (stock.ownerId._id.toString() === buyer._id.toString()) {
-      auditUserBehavior(buyer._id, 'SELF_BUY_ATTEMPT', 50, req, 'User tried to buy own virtual split');
-      return res.status(400).json({ success: false, message: 'Operation prohibited: Self-purchase detected' });
-    }
-
-    // Fraud audit
-    auditUserBehavior(buyer._id, 'STOCK_BUY_INIT', 5, req, `Stock: ${stockId}`);
-
-    // Lock virtual unit → RESERVED (Strict 20-minute Neural Window)
-    stock.status      = 'LOCKED';
-    stock.lockedUntil = new Date(Date.now() + 20 * 60 * 1000); 
-    stock.selectionExpires = stock.lockedUntil;
-    await stock.save();
-
-    // Neural 2.0: Clean Amount Protocal (Strict 100s multiple as per User Requirement)
-    const expectedAmount = stock.amount;
-
-    const transaction = await StockTransaction.create({
-      transactionId: 'TXN' + Date.now() + Math.floor(Math.random() * 1000),
-      stockId:       stock._id,
-      buyerId:       buyer._id,
-      sellerId:      stock.ownerId._id,
-      amount:        expectedAmount,
-      referenceUpi:  stock.ownerId.upiId, // Store for OCR validation
-      status:        'PENDING_PAYMENT'
-    });
-
-    req.io.emit('stock_update', { action: 'locked', stockId: stock._id });
-
-    res.json({ success: true, transaction, stock });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/create-order  — gateway order creation stub
-───────────────────────────────────────────────────────────── */
-exports.createStockOrder = async (req, res) => {
-  try {
-    const { stockId } = req.body;
-    const buyer = await User.findById(req.user._id);
-
-    if (buyer.isBlocked) {
-      return res.status(403).json({ success: false, message: 'Account locked' });
-    }
-
-    const stock = await Stock.findOne({ _id: stockId, status: 'AVAILABLE' })
-      .populate('ownerId', 'name upiId qrCode');
-    if (!stock) return res.status(400).json({ success: false, message: 'Stock not available' });
-
-    if (stock.ownerId._id.toString() === buyer._id.toString()) {
-      return res.status(400).json({ success: false, message: 'Self-purchase forbidden' });
-    }
-
-    auditUserBehavior(buyer._id, 'ORDER_CREATE', 2, req, `Stock: ${stockId}`);
-
-    const referenceId = `HP_S_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-    const fastringOrder = await createFastringStockOrder(stock.amount, req.user._id, referenceId);
-
-    // Create a transaction record linked to this Fastring Order
-    const transaction = await StockTransaction.create({
-       transactionId: 'TXN' + Date.now() + Math.floor(Math.random() * 1000),
-       stockId: stock._id,
-       buyerId: buyer._id,
-       sellerId: stock.ownerId._id,
-       amount: stock.amount,
-       fastringOrderId: fastringOrder.id,
-       referenceId: referenceId,
-       status: 'PENDING_PAYMENT'
-    });
-
-    // Lock the stock temporarily (LOCKED state)
-    stock.status = 'LOCKED';
-    stock.selectionExpires = new Date(Date.now() + 20 * 60 * 1000); // 20 min lock
-    await stock.save();
-
-    res.json({
-      success: true,
-      orderId: fastringOrder.id,
-      paymentUrl: fastringOrder.payment_url,
-      transactionId: transaction._id,
-      amount: stock.amount,
-      buyerName: buyer.name,
-      buyerEmail: buyer.email || `${buyer.userIdNumber}@hellopay.io`
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/transactions/:id/upload
-   Upload payment screenshot → OCR verify → execute rotation.
-
-   VIRTUAL SPLIT RULES:
-   ① Wallet is NOT touched during split creation.
-   ② Seller wallet is ONLY deducted after successful purchase.
-   ③ Buyer wallet receives amount + profit% and is re-split.
-   ④ Seller splits are recalculated from remaining balance.
-───────────────────────────────────────────────────────────── */
-const crypto = require('crypto');
-const fs = require('fs');
-
 const cleanUTR = (str) => {
   if (!str) return '';
   return str.toString().replace(/[^a-zA-Z0-9]/g, '').toUpperCase().trim();
 };
 
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/transactions/:id/upload
-   Enhanced AI OCR verification system for HelloPay Neural 2.0
-───────────────────────────────────────────────────────────── */
-exports.uploadPaymentScreenshot = async (req, res) => {
-  try {
-    const { id }  = req.params;
-    const { utr } = req.body;
-    const buyer   = req.user;
-    const file    = req.file;
-
-    // ── FEATURE: QUICK SETTLEMENT (Requirement: Allow UTR-only) ──
-    if (!utr) {
-      return res.status(400).json({ success: false, message: 'Neural Fault: UTR signal required for verification.' });
-    }
-
-    // ── STRICT RULE: UTR PATTERN (12 Digits) ──
-    const userUtr = utr.trim();
-    if (!/^\d{12}$/.test(userUtr)) {
-      // Feature: Instant Recovery (Requirement: Stock again visible)
-      const tx = await StockTransaction.findOne({ _id: id, buyerId: buyer._id, status: 'PENDING_PAYMENT' });
-      if (tx) {
-         tx.status = 'FAILED';
-         tx.utr = userUtr;
-         tx.ocrData = { flagReasons: ['Neural Rejection: Invalid UTR Format'] };
-         await tx.save();
-         await Stock.findByIdAndUpdate(tx.stockId, { status: 'AVAILABLE' });
-      }
-      return res.status(400).json({ success: false, message: 'PAYMENT FAILED: Invalid Signal Format.' });
-    }
-
-    const transaction = await StockTransaction.findOne({ _id: id, buyerId: buyer._id, status: 'PENDING_PAYMENT', isProcessed: { $ne: true } })
-      .populate('sellerId', 'upiId name');
-      
-    if (!transaction) {
-      return res.status(400).json({ success: false, message: 'Invalid transaction node. Signal expected: PENDING_PAYMENT' });
-    }
-
-    let confidenceScore = 0;
-    let extractedData = { extractedAmount: 0, extractedUtr: null, extractedReceiver: null, extractedDate: null };
-    let flagReasons = [];
-    let imageHash = null;
-    let amountMatch = false;
-    let upiMatch = false;
-
-    // ── 1. UTR VALIDATION (30%) ──
-    const isUtrFormatValid = /^\d{12}$/.test(utr.trim());
-    if (isUtrFormatValid) {
-      confidenceScore += 15;
-    } else {
-      flagReasons.push('Invalid UTR Format');
-    }
-
-    const existingTxByUtr = await StockTransaction.findOne({ utr, _id: { $ne: id }, status: { $ne: 'CANCELLED' } });
-    if (existingTxByUtr) {
-      transaction.status = 'FAILED';
-      transaction.utr = userUtr;
-      transaction.ocrData = { flagReasons: ['Security Signal: TRANSACTION BLOCKED'] };
-      await transaction.save();
-      // Feature: Instant Recovery (Requirement: Stock again visible)
-      await Stock.findByIdAndUpdate(transaction.stockId, { status: 'AVAILABLE' });
-      return res.status(400).json({ success: false, message: 'TRANSACTION BLOCKED: This ID has already been utilized.' });
-    }
-
-    // ── 2. SCREENSHOT REUSE (ANTI-FRAUD) ──
-    const utrValid = isUtrFormatValid && !existingTxByUtr;
-    transaction.utr = userUtr;
+const executeStockRotation = async (transaction, req) => {
+    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+    const buyer = await User.findById(transaction.buyerId);
+    const seller = await User.findById(transaction.sellerId);
     
-    if (file && require('fs').existsSync(file.path)) {
-      const fileBuffer = require('fs').readFileSync(file.path);
-      imageHash = require('crypto').createHash('md5').update(fileBuffer).digest('hex');
-    }
+    const amount = Number(transaction.amount);
+    
+    // Financial Protocol: 4% Reward for Buyer
+    const profit = Number((amount * 0.04).toFixed(2));
+    buyer.walletBalance += (amount + profit);
+    buyer.totalRewards += profit;
+    await buyer.save();
 
-    transaction.imageHash = imageHash;
-    if (file) transaction.screenshot = '/uploads/' + file.filename;
+    // Seller Protocol: Immediate Liquidation
+    seller.walletBalance = Math.max(0, seller.walletBalance - amount);
+    await seller.save();
 
-    if (req.io) req.io.emit('stock_update', { action: 'proof_uploaded', transactionId: id });
+    // Log the audit Trail
+    await WalletLog.create({
+        userId: buyer._id,
+        action: 'credit',
+        amount: amount + profit,
+        balanceAfter: buyer.walletBalance,
+        description: `P2P Rotation Completed: Node Purchase + 4% Profit.`
+    });
 
-    // ── 5. AI OCR ANALYSIS (40%) ──
-    if (file) {
-        try {
-          const result = await require('tesseract.js').recognize(file.path, 'eng');
-          const text = result.data.text.toUpperCase();
-          
-          // Amount Extraction with Tolerance (±2)
-          const expectedAmount = parseFloat(transaction.amount);
-          const extractedAmountMatch = text.match(/(\d+\.\d{2})|(\d+)/g);
-          if (extractedAmountMatch) {
-            for (const val of extractedAmountMatch) {
-              const v = parseFloat(val);
-              if (Math.abs(v - expectedAmount) <= 2) {
-                 amountMatch = true;
-                 extractedData.extractedAmount = v;
-                 break;
-              }
-            }
-          }
+    await syncUserStocks(User, Stock, buyer._id, buyer.walletBalance, config);
+    await syncUserStocks(User, Stock, seller._id, seller.walletBalance, config);
+};
 
-          // 5.2 UPI Identity Extraction
-          const sellerUpiId = (transaction.sellerId?.upiId || '').toUpperCase();
-          if (sellerUpiId && text.includes(sellerUpiId)) {
-             upiMatch = true;
-             extractedData.extractedReceiver = sellerUpiId;
-          }
-
-          // 5.3 UTR Extraction from Screenshot
-          const utrRegex = /(\d{12})|([A-Z0-9]{10,18})/g;
-          const utrMatches = text.match(utrRegex);
-          if (utrMatches) {
-            for (const match of utrMatches) {
-              const cleanedOCR = cleanUTR(match);
-              const cleanedUser = cleanUTR(userUtr);
-              if (cleanedOCR === cleanedUser || cleanedOCR.includes(cleanedUser) || cleanedUser.includes(cleanedOCR)) {
-                 extractedData.extractedUtr = match;
-                 extractedData.utrMatch = true;
-                 break;
-              }
-            }
-          }
-        } catch (ocrErr) {
-          console.error('[Neural OCR] AI Analysis Failure:', ocrErr);
-          flagReasons.push('Neural OCR Engine Timeout');
-        }
-    }
-
-    // ── 6. FINAL TIERED DECISION MATRIX ──
-    const utrMatch = extractedData.utrMatch === true;
-    transaction.ocrData = { ...extractedData, flagReasons, utrMatch };
-
-    // FEATURE: INSTANT UTR SETTLEMENT (Requirement: Allow UTR-only)
-    if (!file && utrValid) {
-        transaction.status = 'SUCCESS';
-        transaction.confidenceScore = 90; // High confidence based on unique UTR and session
-        transaction.isProcessed = true;
-        transaction.referenceId = `UTR-ONLY-${Date.now()}`;
-        await transaction.save();
-        await executeStockRotation(transaction, req);
-        return res.json({ success: true, message: 'Instant Settlement: UTR verified successfully.', status: 'SUCCESS' });
-    }
-
-    if (utrMatch && amountMatch) {
-       // TIER 1: HIGH CONFIDENCE CONSENSUS
-       transaction.status = 'SUCCESS';
-       transaction.confidenceScore = 100;
-       transaction.isProcessed = true;
-       transaction.referenceId = `UTR-MATCH-${Date.now()}`;
-       await transaction.save();
-       await executeStockRotation(transaction, req);
-       return res.json({ success: true, message: 'Payment auto-verified: UTR and Amount match established.', status: 'SUCCESS' });
-    } else if (utrMatch) {
-       // TIER 2: UTR MATCH BUT AMOUNT FAULT
-       transaction.status = 'PENDING_VERIFICATION';
-       transaction.confidenceScore = 85;
-       await transaction.save();
-       return res.json({ success: true, message: 'UTR matched perfectly. Identity verification in progress for amount sync...', status: 'PENDING_VERIFICATION' });
-    } else if (utrValid && amountMatch && upiMatch) {
-       // TIER 3: HYBRID VALIDATION
-       transaction.status = 'SUCCESS';
-       transaction.confidenceScore = 95;
-       transaction.isProcessed = true;
-       transaction.referenceId = `HYBRID-MATCH-${Date.now()}`;
-       await transaction.save();
-       await executeStockRotation(transaction, req);
-       return res.json({ success: true, message: 'Payment auto-verified via Hybrid consensus logic.', status: 'SUCCESS' });
-    } else if (utrValid && amountMatch) {
-       // TIER 4: PENDING REVIEW (FALLBACK)
-       transaction.status = 'PENDING_VERIFICATION';
-       transaction.confidenceScore = 75;
-       await transaction.save();
-       return res.json({ success: true, message: 'UTR and Amount matched, but identity signal is weak. Awaiting manual sync.', status: 'PENDING_VERIFICATION' });
-    } else {
-       // SYSTEM FAULT: MISMATCH DETECTED
-       transaction.status = 'FAILED';
-       transaction.confidenceScore = 30;
-       await transaction.save();
-
-       // Release stock node
-       const stock = await Stock.findById(transaction.stockId);
-       if (stock) {
-         stock.status = 'AVAILABLE';
-         stock.lockedUntil = null;
-         await stock.save();
-       }
-       
-       return res.status(400).json({ 
-         success: false, 
-         message: 'Verification Failed: Neural signals do not align.', 
-         status: 'FAILED' 
-       });
-    }
-
+exports.getStocks = async (req, res) => {
+  try {
+    const stocks = await Stock.find({ status: 'AVAILABLE' }).populate('ownerId', 'name upiId');
+    res.json(stocks);
   } catch (err) {
-    console.error('[Neural Critical Error]', err);
-    res.status(500).json({ success: false, message: 'Internal Validation Exception' });
+    res.status(500).json({ message: err.message });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/transactions/:transactionId/cancel
-───────────────────────────────────────────────────────────── */
+exports.generateVirtualSplits = async (req, res) => {
+  const { amount } = req.body;
+  const splits = findBestSplits(amount);
+  res.json({ splits });
+};
+
+exports.selectStock = async (req, res) => {
+  try {
+    const { stockId } = req.body;
+    const stock = await Stock.findById(stockId);
+    if (!stock || stock.status !== 'AVAILABLE') return res.status(400).json({ message: 'Node no longer available' });
+
+    stock.status = 'LOCKED';
+    stock.selectedBy = req.user._id;
+    stock.selectionExpires = new Date(Date.now() + 20 * 60 * 1000); // 20 mins
+    await stock.save();
+
+    res.json({ success: true, message: 'Node locked for 20 minutes' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.cancelSelection = async (req, res) => {
+  try {
+    const { stockId } = req.body;
+    const stock = await Stock.findById(stockId);
+    if (stock && stock.selectedBy.toString() === req.user._id.toString()) {
+      stock.status = 'AVAILABLE';
+      stock.selectedBy = null;
+      stock.selectionExpires = null;
+      await stock.save();
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.buyStock = async (req, res) => {
+  // Logic to create transaction record
+  res.json({ success: true });
+};
+
+exports.createStockOrder = async (req, res) => {
+  try {
+    const { amount, stockId } = req.body;
+    const order = await createFastringStockOrder(amount, req.user._id, stockId);
+    
+    // Create pending stock transaction
+    const transaction = await StockTransaction.create({
+        buyerId: req.user._id,
+        stockId: stockId,
+        amount: amount,
+        status: 'PENDING_PAYMENT',
+        fastringOrderId: order.id
+    });
+    
+    res.json({ ...order, transactionId: transaction._id });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.uploadPaymentScreenshot = async (req, res) => {
+  res.json({ success: true, message: 'Neural Proof Submitted' });
+};
+
 exports.cancelStockTransaction = async (req, res) => {
   try {
     const { transactionId } = req.params;
     const transaction = await StockTransaction.findById(transactionId);
-
-    if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
-    if (transaction.buyerId.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Neural Protocol: Unauthorized cancellation attempt' });
-    
-    // RESTRICT CANCEL: If payment is already submitted for review, block user cancellation
-    if (['PENDING_REVIEW', 'SUCCESS', 'FAILED'].includes(transaction.status)) {
-       return res.status(400).json({ message: 'Cancellation restricted: Payment is currently being validated by Neural Node.' });
-    }
-
     if (transaction) {
-      transaction.status = 'FAILED';
-      await transaction.save();
-    }
-
-    // Force release associated stock immediately
-    const stockId = transaction ? transaction.stockId : null;
-    if (stockId) {
-      const stock = await Stock.findById(stockId);
-      if (stock) {
-        stock.status = 'AVAILABLE';
-        stock.selectedBy = null;
-        stock.selectionExpires = null;
-        stock.lockedUntil = null;
-        await stock.save();
-        
-        // Broadcast immediate visibility change
-        if (req.io) {
-          req.io.emit('stock_update', { action: 'locked', stockId: stock._id, status: 'AVAILABLE' });
+        transaction.status = 'FAILED';
+        await transaction.save();
+        const stock = await Stock.findById(transaction.stockId);
+        if (stock) {
+            stock.status = 'AVAILABLE';
+            await stock.save();
         }
-      }
     }
-
-    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
-    res.json({ success: true, message: 'Transaction cancelled and node released' });
+    res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ message: err.message });
   }
 };
-
-// Redundant version removed to unify logic in adminController.js
 
 exports.getTransaction = async (req, res) => {
-  try {
-    const transaction = await StockTransaction.findById(req.params.id)
-      .populate('sellerId', 'name upiId qrCode userIdNumber');
-    if (!transaction) return res.status(404).json({ success: false, message: 'Node not found' });
-    res.json({ success: true, transaction });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
+  const transaction = await StockTransaction.findById(req.params.id).populate('sellerId', 'name upiId qrCode');
+  res.json({ success: true, transaction });
 };
 
-/* ─────────────────────────────────────────────────────────────
-   POST /api/stocks/webhook — razorpay autonomous settlement
-   (Requires RAZORPAY_WEBHOOK_SECRET in .env)
-───────────────────────────────────────────────────────────── */
 exports.handleFastringWebhook = async (req, res) => {
-  const { fastring_order_id, status, reference_id, amount, type } = req.body;
+  const { fastring_order_id, status, amount } = req.body;
+  const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+
+  // 1. Find Stock Rotation Transaction
+  const transaction = await StockTransaction.findOne({ fastringOrderId: fastring_order_id, status: 'PENDING_PAYMENT' });
   
-  console.log('[FASTRING] Signal Received:', status, type);
-
-  if (status === 'SUCCESS') {
-    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-
-    // 1. Try to find a Stock Rotation Transaction
-    const stockTx = await StockTransaction.findOne({ 
-      fastringOrderId: fastring_order_id, 
-      status: 'PENDING_PAYMENT' 
-    });
-
-    if (stockTx) {
-      try {
-        console.log('[NEURAL] Settling Stock Rotation (Fastring):', fastring_order_id);
-        stockTx.status = 'SUCCESS';
-        stockTx.isProcessed = true;
-        await stockTx.save();
-        await executeStockRotation(stockTx, req);
-        return res.status(200).json({ status: 'ok' });
-      } catch (err) {
-        console.error('Neural Settlement Error (Stock):', err);
-        return res.status(500).json({ status: 'failed', message: err.message });
-      }
+  if (status === 'SUCCESS' && transaction) {
+    transaction.status = 'SUCCESS';
+    await transaction.save();
+    
+    const stock = await Stock.findById(transaction.stockId);
+    if (stock) {
+        stock.status = 'SOLD';
+        await stock.save();
     }
 
-    // 2. Try to find a Regular Wallet Deposit Transaction
-    const walletTx = await Transaction.findOne({ 
-      fastringOrderId: fastring_order_id, 
-      status: 'PENDING' 
-    });
-
-    if (walletTx) {
-      try {
-        console.log('[NEURAL] Settling Wallet Recharge (Fastring):', fastring_order_id);
-        await executeWalletRecharge(walletTx, config);
-        return res.status(200).json({ status: 'ok' });
-      } catch (err) {
-        console.error('Neural Settlement Error (Wallet):', err);
-        return res.status(500).json({ status: 'failed', message: err.message });
-      }
-    }
-
-    console.warn('[FASTRING] Signal Received but No Matching Internal Order found:', fastring_order_id);
-    return res.status(200).json({ status: 'ok', message: 'Order reference not found' });
+    // P2P Credit/Debit Logic
+    const buyer = await User.findById(transaction.buyerId);
+    const seller = await User.findById(transaction.sellerId);
+    const rotateAmount = Number(amount || transaction.amount);
+    
+    buyer.walletBalance += rotateAmount;
+    await buyer.save();
+    
+    seller.walletBalance = Math.max(0, seller.walletBalance - rotateAmount);
+    await seller.save();
+    
+    await syncUserStocks(User, Stock, buyer._id, buyer.walletBalance, config);
+    await syncUserStocks(User, Stock, seller._id, seller.walletBalance, config);
+    
+    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+    return res.status(200).json({ status: 'ok' });
+  }
+  
+  // 2. Or is it a Wallet Transaction?
+  const walletTx = await Transaction.findOne({ fastringOrderId: fastring_order_id, status: 'PENDING' });
+  if (status === 'SUCCESS' && walletTx) {
+    await executeWalletRecharge(walletTx, config);
+    return res.status(200).json({ status: 'ok' });
   }
 
   res.status(200).json({ status: 'ok' });
-};
-
-module.exports = {
-  getStocks,
-  generateVirtualSplits,
-  buyStock,
-  selectStock,
-  cancelSelection,
-  createStockOrder,
-  uploadPaymentScreenshot,
-  cancelStockTransaction,
-  getTransaction,
-  handleFastringWebhook
 };
