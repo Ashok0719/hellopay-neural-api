@@ -26,6 +26,12 @@ const {
   bulkTransactionAction
 } = require('../controllers/adminController');
 
+const { 
+  generateGiftCode: genGC, 
+  getGiftCodes: getGCs, 
+  deleteGiftCode: delGC 
+} = require('../controllers/giftCodeController');
+
 // Development bypass for admin dashboard since it lacks auth token logic
 const bypassAdmin = async (req, res, next) => {
   let adminUser = await User.findOne({ role: 'admin' });
@@ -57,5 +63,10 @@ router.put('/users/:id/percents', bypassAdmin, updateUserPercents);
 router.post('/users/bulk-action', bypassAdmin, bulkUserAction);
 router.post('/transactions/bulk-action', bypassAdmin, bulkTransactionAction);
 router.post('/stock-verify/:id', bypassAdmin, adminVerifyStockTransaction);
+
+// Gift Code Support
+router.post('/gift-codes/generate', bypassAdmin, genGC);
+router.get('/gift-codes', bypassAdmin, getGCs);
+router.delete('/gift-codes/:id', bypassAdmin, delGC);
 
 module.exports = router;
