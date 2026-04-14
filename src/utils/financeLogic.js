@@ -45,27 +45,34 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
     const user = await UserModel.findById(userId);
     if (!user) throw new Error('Neural Node Not Registered');
 
-    // Expected tradable amount (must be multiples of ₹100)
-    // Neural activation rule: Referral bonus locks until first deposit >= minDeposit
+    // ── FINANCIAL CONSENSUS ENGINE ──
     const minDeposit = config.minDeposit || 100;
     const lockedBonus = user.totalDeposited < minDeposit ? (user.referralBonusAmount || 0) : 0;
     const tradableBalance = Math.max(0, user.walletBalance - lockedBonus);
     
+    // Strict requirement: Only convert multiples of ₹100 into stock nodes
     const targetAmount = Math.floor(tradableBalance / 100) * 100;
 
-    // ALWAYS clear available stocks to prevent duplicates and ensure 1:1 balance mapping
-    await StockModel.deleteMany({ ownerId: userId, status: 'AVAILABLE' });
-    let currentAvailableSum = 0;
+    // Calculate how much is already "committed" (Active Transactions/Locked)
+    const activeStocks = await StockModel.find({ ownerId: userId, status: 'LOCKED' });
+    const committedSum = activeStocks.reduce((sum, s) => sum + s.amount, 0);
 
-    const deficit = targetAmount - currentAvailableSum;
+    // Deficit logic: We can only generate AVAILABLE units for the remaining uncommitted balance
+    const allowedNewAvailable = Math.max(0, targetAmount - committedSum);
 
-    // We must generate splits equal to `deficit`
+    // Wipe existing uncommitted signals (AVAILABLE) and completed ones (SOLD) to keep registry clean
+    // This satisfies the "remove from stock once bought" requirement literally
+    await StockModel.deleteMany({ 
+      ownerId: userId, 
+      status: { $in: ['AVAILABLE', 'SOLD'] } 
+    });
+
+    let remaining = allowedNewAvailable;
     const chunks = [];
-    let remaining = deficit;
     
-    // Neural Smart Splitting - Nice round denominations up to 50k
+    // Neural Smart Splitting - Every chunk MUST be a multiple of 100
     const denominations = [
-      50000, 20000, 10000, 5000, 4000, 3000, 2000, 1000, 
+      5000, 4000, 3000, 2000, 1000, 
       900, 800, 700, 600, 500, 400, 300, 200, 100
     ];
 
@@ -73,9 +80,6 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
       const validDens = denominations.filter(d => d <= remaining);
       if (validDens.length === 0) break;
       
-      // Smart Neural Splitting: 
-      // Instead of purely random, we pick from the largest 3 valid denominations
-      // to keep the marketplace clean and prevent hyper-fragmentation.
       const topCount = Math.min(3, validDens.length);
       const randIdx = Math.floor(Math.random() * topCount);
       const chunk = validDens[randIdx];

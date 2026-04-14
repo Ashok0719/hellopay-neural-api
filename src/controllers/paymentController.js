@@ -553,6 +553,11 @@ const rejectPayment = async (req, res) => {
       });
     }
 
+    if (req.io) {
+      req.io.emit('payment_settled', { transactionId: id, status: 'FAILED', reason });
+      req.io.emit('stock_update', { action: 'refresh' });
+    }
+
     res.json({ success: true, message: 'Payment Rejected and Node Released' });
 
   } catch (err) {

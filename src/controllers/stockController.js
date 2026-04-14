@@ -508,6 +508,7 @@ exports.cancelStockTransaction = async (req, res) => {
 
     if (transaction) {
       transaction.status = 'FAILED';
+      transaction.description = 'Neural Signal: Canceled by Buyer';
       await transaction.save();
     }
 
@@ -518,18 +519,18 @@ exports.cancelStockTransaction = async (req, res) => {
       if (stock) {
         stock.status = 'AVAILABLE';
         stock.selectedBy = null;
-        stock.selectionExpires = null;
         stock.lockedUntil = null;
+        stock.selectionExpires = null;
         await stock.save();
         
-        // Broadcast immediate visibility change
+        // Broadcast the release to all nodes
         if (req.io) {
-          req.io.emit('stock_update', { action: 'locked', stockId: stock._id, status: 'AVAILABLE' });
+          req.io.emit('stock_update', { action: 'refresh' });
+          req.io.emit('new_payment_submitted', { action: 'refresh' }); // Auto-refresh admin hub
         }
       }
     }
 
-    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
     res.json({ success: true, message: 'Transaction cancelled and node released' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
