@@ -470,56 +470,90 @@ const submitPaymentProof = async (req, res) => {
   }
 };
 
-/**
+/** 
  * @desc    Admin: Approve Payment
  */
 const approvePayment = async (req, res) => {
   try {
     const { id } = req.params;
-    const transaction = await Transaction.findById(id);
     const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+    
+    // Check both Transaction (Wallet) and StockTransaction (P2P)
+    let transaction = await Transaction.findById(id);
+    let isStockTx = false;
 
-    if (!transaction || transaction.status !== 'PENDING') {
-      return res.status(400).json({ success: false, message: 'Invalid transaction node' });
+    if (!transaction) {
+      transaction = await StockTransaction.findById(id);
+      isStockTx = true;
     }
 
-    // Execute Settlement Logic
-    await executeWalletRecharge(transaction, config, req);
+    if (!transaction || !['PENDING', 'PENDING_VERIFICATION', 'PENDING_PAYMENT', 'PENDING_REVIEW'].includes(transaction.status)) {
+      return res.status(400).json({ success: false, message: 'Invalid transaction node or already processed' });
+    }
 
-    res.json({ success: true, message: 'Payment Approved and Wallet Credited' });
+    if (isStockTx) {
+       // Manual P2P Rotation Settlement
+       await executeStockRotation(transaction, req);
+       transaction.status = 'SUCCESS';
+       await transaction.save();
+    } else {
+       // Manual Wallet Recharge Settlement
+       await executeWalletRecharge(transaction, config, req);
+    }
+
+    res.json({ success: true, message: 'Payment Approved and Settlement Executed' });
 
   } catch (err) {
     console.error('Approve Payment Error:', err);
-    res.status(500).json({ success: false, message: 'Approval Protocol Failed' });
+    res.status(500).json({ success: false, message: 'Approval Protocol Failed: ' + err.message });
   }
 };
 
-/**
- * @desc    Admin: Reject Payment
- */
 const rejectPayment = async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
-    const transaction = await Transaction.findById(id);
+    
+    let transaction = await Transaction.findById(id);
+    let isStockTx = false;
 
-    if (!transaction || transaction.status !== 'PENDING') {
-      return res.status(400).json({ success: false, message: 'Invalid transaction node' });
+    if (!transaction) {
+      transaction = await StockTransaction.findById(id);
+      isStockTx = true;
+    }
+
+    if (!transaction || !['PENDING', 'PENDING_VERIFICATION', 'PENDING_PAYMENT', 'PENDING_REVIEW'].includes(transaction.status)) {
+      return res.status(400).json({ success: false, message: 'Invalid transaction node or already processed' });
     }
 
     transaction.status = 'FAILED';
-    transaction.description = reason ? `Rejected: ${reason}` : 'Payment Rejected';
+    transaction.description = reason ? `Rejected: ${reason}` : 'Payment Rejected by Admin';
     await transaction.save();
 
+    // Release stock node if this was a P2P rotation
+    if (transaction.stockId) {
+       const Stock = require('../models/Stock');
+       const stock = await Stock.findById(transaction.stockId);
+       if (stock) {
+          stock.status = 'AVAILABLE';
+          stock.selectedBy = null;
+          stock.lockedUntil = null;
+          stock.selectionExpires = null;
+          await stock.save();
+          if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+       }
+    }
+
     if (req.io) {
+      const targetUserId = isStockTx ? transaction.buyerId : transaction.senderId;
       req.io.emit('userStatusChanged', { 
-        userId: transaction.senderId, 
+        userId: targetUserId, 
         paymentStatus: 'FAILED',
         message: 'Payment Failed: Your proof was rejected by the admin.'
       });
     }
 
-    res.json({ success: true, message: 'Payment Rejected' });
+    res.json({ success: true, message: 'Payment Rejected and Node Released' });
 
   } catch (err) {
     console.error('Reject Payment Error:', err);
