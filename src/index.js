@@ -61,8 +61,6 @@ const io = new Server(server, {
 console.log('--- HelloPay Neural Base Initializing ---');
 app.use(helmet({
   contentSecurityPolicy: false,
-  crossOriginOpenerPolicy: { policy: "unsafe-none" },
-  crossOriginEmbedderPolicy: false,
 })); 
 app.use(morgan('dev'));
 
@@ -124,7 +122,9 @@ app.use('/api/listings', listingRoutes);
 app.use('/api/stocks', require('./routes/stockRoutes'));
 app.use('/api/support', require('./routes/supportRoutes'));
 app.use('/api/tasks', require('./routes/taskRoutes'));
-app.use('/api/paytm', require('./routes/paytmRoutes'));
+
+// 🚀 Future-Ready Payment Core (Razorpay)
+app.use('/api/payments', require('./routes/paymentRoutes'));
 
 // Feature: Unique UPI Identity Flow
 const { upload }  = require('./middleware/uploadMiddleware');

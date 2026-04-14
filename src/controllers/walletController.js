@@ -6,7 +6,13 @@ const Config = require('../models/Config');
 const { calculateFinancials, syncUserStocks } = require('../utils/financeLogic');
 const StockTransaction = require('../models/StockTransaction');
 const crypto = require('crypto');
-const axios = require('axios');
+const Razorpay = require('razorpay');
+
+// Razorpay Instance
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET
+});
 
 // Optimized Neural OCR Engine (Initialized at startup for Instant Verification)
 let ocrWorker = null;
@@ -37,6 +43,7 @@ const expireStaleOrders = async () => {
 const getSystemConfig = async () => {
   let config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
   if (!config) {
+    // Default fallback (though it should be initialized in index.js)
     config = {
       globalCashbackPercent: 4,
       stockPlans: [],
@@ -52,203 +59,26 @@ const getSystemConfig = async () => {
   return config;
 };
 
-// Unified Wallet Settlement Engine
-const executeWalletRecharge = async (transaction, config) => {
-  const user = await User.findById(transaction.senderId);
-  const depositAmt = parseFloat(transaction.amount);
-
-  const { userParts, adminExtra, cashback } = calculateFinancials(depositAmt, config);
-
-  user.walletBalance += depositAmt;
-  user.rewardBalance = (user.rewardBalance || 0) + cashback;
-  user.totalRewards = (user.totalRewards || 0) + cashback;
-  user.totalDeposited = (user.totalDeposited || 0) + depositAmt;
-  await user.save();
-
-  transaction.status = 'SUCCESS';
-  transaction.split = { userParts, adminExtra };
-  transaction.cashback = cashback;
-  await transaction.save();
-
-  await WalletLog.create({
-    userId: user._id,
-    action: 'credit',
-    amount: depositAmt,
-    balanceAfter: user.walletBalance,
-    description: `Auto-Verified Deposit: ₹${depositAmt}`,
-  });
-
-  await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
-  return { user, cashback };
-};
-
-const createFastringOrderSession = async (amount, userId, referenceId) => {
-  const fastringOrderId = `FR_${referenceId}_${Date.now().toString().slice(-4)}`;
-  const baseUrl = process.env.FASTRING_PAY_BASE_URL || 'https://hellopay.fastspring.com/session';
-  const paymentUrl = `${baseUrl}/${fastringOrderId}?amount=${amount}&userId=${userId}&orderId=${referenceId}`;
-
-  return { 
-     id: fastringOrderId, 
-     payment_url: paymentUrl,
-     success: true 
-  };
-};
-
-/**
- * @desc    Initialize Fastring Payment for Wallet Recharge
- * @route   POST /api/wallet/add-money
- * @access  Private
- */
-const createOrder = async (req, res) => {
-  try {
-    const { amount } = req.body;
-    const config = await getSystemConfig();
-
-    if (!config.depositEnabled) {
-      return res.status(403).json({ message: 'Deposits are currently disabled by admin' });
-    }
-
-    if (!amount || amount < config.minDeposit || amount > config.maxDeposit) {
-      return res.status(400).json({ message: `Amount must be between ₹${config.minDeposit} and ₹${config.maxDeposit}` });
-    }
-
-    const referenceId = `HP_W_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-    const fastringOrder = await createFastringOrderSession(amount, req.user._id, referenceId);
-    
-    await Transaction.create({
-      senderId: req.user._id,
-      receiverId: req.user._id,
-      type: 'add_money',
-      amount: parseFloat(amount),
-      status: 'PENDING',
-      fastringOrderId: fastringOrder.id,
-      referenceId: referenceId,
-      description: `Wallet Recharge (Fastring) - ₹${amount}`
-    });
-
-    res.json({
-       success: true,
-       orderId: fastringOrder.id,
-       paymentUrl: fastringOrder.payment_url,
-       amount: amount
-    });
-  } catch (err) {
-    console.error('Wallet Ignition Error:', err);
-    res.status(500).json({ message: 'Neural Ignition Failed: Payment Gateway Unreachable' });
-  }
-};
-
-/**
- * @desc    Verify Fastring payment & apply financial logic
- * @route   POST /api/wallet/fastring-callback
- * @access  Public (Webhook/Callback)
- */
-const fastringCallback = async (req, res) => {
-  const { fastring_order_id, status, reference_id, amount } = req.body;
-  const config = await getSystemConfig();
-
-  const transaction = await Transaction.findOne({ referenceId: reference_id, status: 'PENDING' });
-
-  if (status === 'SUCCESS' && transaction) {
-    await executeWalletRecharge(transaction, config);
-    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
-    res.json({ success: true, message: 'Payment verified and credited' });
-  } else {
-    res.status(400).json({ success: false, message: 'Invalid signal or payment failed' });
-  }
-};
-
-const getWalletHistory = async (req, res) => {
-  const logs = await WalletLog.find({ userId: req.user._id }).sort({ createdAt: -1 });
-  res.json(logs);
-};
-
-const getPublicConfig = async (req, res) => {
-  const config = await getSystemConfig();
-  res.json({
-    stockPlans: config.stockPlans,
-    minDeposit: config.minDeposit,
-    maxDeposit: config.maxDeposit,
-    globalCashbackPercent: config.globalCashbackPercent,
-    depositEnabled: config.depositEnabled,
-    withdrawalEnabled: config.withdrawalEnabled,
-  });
-};
-
-const simulatePayment = async (req, res) => {
-    const { amount } = req.body;
-    const user = await User.findById(req.user._id);
-    const config = await getSystemConfig();
-  
-    const depositAmt = parseFloat(amount);
-    const { cashback } = calculateFinancials(depositAmt, config);
-  
-    user.walletBalance += depositAmt;
-    user.rewardBalance += cashback;
-    await user.save();
-  
-    await Transaction.create({
-      senderId: req.user._id,
-      receiverId: req.user._id,
-      type: 'add_money',
-      amount: depositAmt,
-      status: 'SUCCESS',
-      referenceId: `SIM_${Date.now()}`,
-      description: `Simulated Deposit: ₹${depositAmt}`
-    });
-  
-    await WalletLog.create({
-      userId: req.user._id,
-      action: 'credit',
-      amount: depositAmt,
-      balanceAfter: user.walletBalance,
-      description: `Simulated Deposit: ₹${depositAmt}`,
-    });
-  
-    await syncUserStocks(User, Stock, req.user._id, user.walletBalance, config);
-    res.json({ success: true, newBalance: user.walletBalance });
-};
-
-const requestWithdrawal = async (req, res) => {
-  const { amount } = req.body;
-  const user = await User.findById(req.user._id);
-  const config = await getSystemConfig();
-
-  if (!config.withdrawalEnabled) {
-    return res.status(403).json({ message: 'Withdrawals are currently disabled' });
-  }
-
-  const withdrawAmount = parseFloat(amount);
-  if (user.walletBalance < withdrawAmount) {
-    return res.status(400).json({ message: 'Insufficient neural balance' });
-  }
-
-  user.walletBalance -= withdrawAmount;
-  await user.save();
-
-  await Transaction.create({
-    senderId: user._id,
-    receiverId: user._id, 
-    type: 'withdrawal',
-    amount: withdrawAmount,
-    status: 'PENDING',
-    referenceId: `wd_${Date.now()}`,
-    description: `Withdrawal Request - ₹${withdrawAmount}`
-  });
-
-  await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
-  res.json({ success: true, message: 'Withdrawal request submitted', walletBalance: user.walletBalance });
-};
-
+// @desc    Create Razorpay order
+// @route   POST /api/wallet/add-money
+// @access  Private
+// @desc    Match a P2P Seller for Recharge Rotation
+// @route   POST /api/wallet/match-p2p
 const matchP2P = async (req, res) => {
   try {
+    // Neural Cleanup: Expired Signals
     await expireStaleOrders();
+
     const { amount } = req.body;
     const buyerId = req.user._id;
 
-    if (!amount) return res.status(400).json({ message: 'Amount required' });
+    if (!amount || isNaN(Number(amount))) {
+      return res.status(400).json({ message: 'Invalid recharge amount signal' });
+    }
+
     const targetAmount = Number(amount);
 
+    // Find a matching AVAILABE node that is NOT owned by the buyer
     const stock = await Stock.findOne({
       amount: targetAmount,
       status: 'AVAILABLE',
@@ -256,14 +86,22 @@ const matchP2P = async (req, res) => {
     }).populate('ownerId', 'name upiId qrCode');
 
     if (!stock) {
-      return res.json({ success: false, message: 'No matching P2P node found', adminFallback: true });
+      // Fallback: No matching rotation node found
+      return res.json({ 
+        success: false, 
+        message: 'No matching P2P node found. Falling back to System Admin routing.',
+        adminFallback: true
+      });
     }
 
+    // Lock the node temporarily (20 mins)
     stock.status = 'LOCKED';
     stock.selectedBy = buyerId;
     stock.selectionExpires = new Date(Date.now() + 20 * 60 * 1000);
     await stock.save();
 
+    // Create a Stock Transaction (Simulation of Purchase)
+    const StockTransaction = require('../models/StockTransaction');
     const transaction = await StockTransaction.create({
       transactionId: 'P2P_' + Date.now(),
       stockId: stock._id,
@@ -275,14 +113,172 @@ const matchP2P = async (req, res) => {
 
     res.json({
       success: true,
-      seller: { name: stock.ownerId.name, upiId: stock.ownerId.upiId, qrCode: stock.ownerId.qrCode },
+      message: 'Neural P2P Match Established',
+      seller: {
+        name: stock.ownerId.name,
+        upiId: stock.ownerId.upiId,
+        qrCode: stock.ownerId.qrCode
+      },
       transactionId: transaction._id
     });
+
   } catch (err) {
+    console.error('P2P Match Error:', err);
     res.status(500).json({ message: 'Neural Matching Fault' });
   }
 };
 
+// Match a P2P Seller for Recharge Rotation
+
+// @desc    Verify Razorpay payment & apply financial logic
+// @route   POST /api/wallet/verify-payment
+// @access  Private
+// verifyPayment removed (now handled by paymentController)
+
+// @desc    Get Wallet Balance & Logs
+// @route   GET /api/wallet/history
+// @access  Private
+const getWalletHistory = async (req, res) => {
+  const logs = await WalletLog.find({ userId: req.user._id }).sort({ createdAt: -1 });
+  res.json(logs);
+};
+
+// @desc    Get Public Config for UI
+// @route   GET /api/wallet/config
+// @access  Private
+const getPublicConfig = async (req, res) => {
+  const config = await getSystemConfig();
+  const totalUsers = await User.countDocuments();
+  res.json({
+    stockPlans: config.stockPlans,
+    minDeposit: config.minDeposit,
+    maxDeposit: config.maxDeposit,
+    globalCashbackPercent: config.globalCashbackPercent,
+    referralCommissionPercent: config.referralCommissionPercent,
+    referralBonus: config.referralBonus,
+    profitPercentage: config.profitPercentage,
+    depositEnabled: config.depositEnabled,
+    withdrawalEnabled: config.withdrawalEnabled,
+    receiverUpiId: config.receiverUpiId,
+    receiverQrCode: config.receiverQrCode,
+    totalUsers
+  });
+};
+
+// @desc    Simulate payment success (for Paytm/PhonePe/etc. simulation)
+const simulatePayment = async (req, res) => {
+  const { amount } = req.body;
+  const user = await User.findById(req.user.id);
+
+  if (!user) return res.status(404).json({ message: 'User not found' });
+
+  // Get active config
+  const config = (await Config.findOne({ key: 'SYSTEM_CONFIG' })) || { globalCashbackPercent: 4 };
+
+  // Calculate finance splits and rewards
+  const { userParts, adminExtra, cashback } = calculateFinancials(amount, config);
+
+  // Update user balances with 4% bonus logic
+  const bonusAmount = amount * 1.04;
+  user.walletBalance += bonusAmount;
+  user.rewardBalance += cashback;
+  user.totalRewards += cashback;
+  user.totalDeposited += amount;
+  await user.save();
+
+  // Create detailed transaction record
+  await Transaction.create({
+    senderId: user._id,
+    amount: amount,
+    type: 'plan_purchase',
+    status: 'completed',
+    cashback: cashback,
+    split: {
+      userParts: userParts,
+      adminExtra: adminExtra
+    }
+  });
+
+  // REBUILD NODES: Tokenize immediately
+  await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
+
+  if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+
+  res.json({
+    message: 'Payment simulated successfully',
+    newBalance: user.walletBalance,
+    rewardBalance: user.rewardBalance,
+    cashback: cashback
+  });
+};
+
+// @desc    Request withdrawal
+// @route   POST /api/wallet/withdraw
+// @access  Private
+const requestWithdrawal = async (req, res) => {
+  const { amount, pin } = req.body;
+  const config = await getSystemConfig();
+
+  if (!config.withdrawalEnabled) {
+    return res.status(403).json({ message: 'Withdrawals are currently disabled by admin' });
+  }
+
+  const withdrawAmount = parseFloat(amount);
+  if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
+    return res.status(400).json({ message: 'Invalid withdrawal amount' });
+  }
+
+  const user = await User.findById(req.user._id);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+
+  // Security PIN Check
+  if (!pin) {
+    return res.status(400).json({ message: 'Safety PIN required' });
+  }
+  if (!(await user.matchPin(pin))) {
+    return res.status(401).json({ message: 'Safety Protocol: Invalid PIN' });
+  }
+
+  if (user.walletBalance < withdrawAmount) {
+    return res.status(400).json({ message: 'Insufficient balance' });
+  }
+
+  // Deduct balance immediately & create pending transaction
+  user.walletBalance -= withdrawAmount;
+  await user.save();
+
+  await Transaction.create({
+    senderId: user._id,
+    receiverId: user._id, 
+    type: 'withdrawal',
+    amount: withdrawAmount,
+    status: 'PENDING',
+    referenceId: `wd_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+    description: `Withdrawal Request - ₹${withdrawAmount}`
+  });
+
+  await WalletLog.create({
+    userId: user._id,
+    action: 'debit',
+    amount: withdrawAmount,
+    balanceAfter: user.walletBalance,
+    description: `Withdrawal Request: ₹${withdrawAmount} (Pending Approval)`,
+  });
+
+  // Re-sync stocks since balance changed
+  await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
+
+  if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+
+  res.json({ 
+    message: 'Withdrawal request submitted for approval', 
+    walletBalance: user.walletBalance 
+  });
+};
+
+// @desc    Neural 2.0 Identity-Bound Auto-Verification
+// @route   POST /api/wallet/neural-verify
+// @access  Private
 const neuralVerifyPayment = async (req, res) => {
   try {
     const { amount, utr } = req.body;
@@ -290,37 +286,294 @@ const neuralVerifyPayment = async (req, res) => {
     const userId = req.user._id;
 
     if (!amount || !utr || !file) {
-      return res.status(400).json({ message: 'Signals required' });
+      return res.status(400).json({ message: 'Missing neural signals: amount, UTR, and proof required.' });
     }
 
     const config = await getSystemConfig();
     const expectedAmount = parseFloat(amount);
     
-    // OCR Logic and validation would go here (truncated for brevity in restoration but ensuring function existence)
-    // For now, we use a basic version that relies on manual if OCR fails, 
-    // but in reality we'd use the Tesseract code recovered.
+    // 1. UTR Duplicity Check
+    const existingTx = await Transaction.create.name === 'Transaction' ? await Transaction.findOne({ referenceId: utr }) : null;
+    // Actually, check Transaction for duplicate referenceId (which we use for UTR here)
+    const duplicateUtr = await Transaction.findOne({ referenceId: utr });
+    if (duplicateUtr) {
+      return res.status(400).json({ message: 'Security Alert: UPI Transaction ID already processed by another node.' });
+    }
+
+    // 2. OCR Verification Engine
+    let amountMatch = false;
+    let upiMatch = false;
+    let utrMatch = false;
+
+    // Neural Optimization: Identify Target Receiver (Admin or P2P Seller)
+    let targetUpiId = (config.receiverUpiId || 'admin@okaxis').toUpperCase();
     
-    res.json({ success: true, message: 'Neural verification submitted' });
+    // Look for a matching Stock Transaction if this is a P2P rotation
+    const rotationTx = await require('../models/StockTransaction').findOne({ 
+      buyerId: userId, 
+      amount: expectedAmount, 
+      status: 'PENDING_PAYMENT' 
+    }).populate('sellerId', 'upiId');
+
+    if (rotationTx && rotationTx.sellerId?.upiId) {
+       targetUpiId = rotationTx.sellerId.upiId.toUpperCase();
+       console.log(`[Neural Flow] P2P Rotation Detected. Verifying against Seller: ${targetUpiId}`);
+    }
+
+    try {
+      console.log(`[Neural Engine] Starting Instant OCR Analysis for ${file.filename}...`);
+      if (!ocrWorker) await initOCR();
+      const { data: { text } } = await ocrWorker.recognize(file.path);
+      const textUpper = text.toUpperCase();
+      const alphanumericText = textUpper.replace(/[^A-Z0-9]/g, ''); // Ultra-Clean stream
+      
+      // Amount Extraction (Handles ₹, commas, and decimals)
+      const amountRegex = /(?:RS|INR|₹)?\s*([\d,]+(?:\.\d{2})?)/g;
+      let amountMatchTarget = false;
+      let m;
+      while ((m = amountRegex.exec(textUpper)) !== null) {
+          const val = parseFloat(m[1].replace(/,/g, ''));
+          if (Math.abs(val - expectedAmount) <= 2) {
+              amountMatchTarget = true;
+              break;
+          }
+      }
+      amountMatch = amountMatchTarget;
+
+      // UTR / Transaction ID Extraction (High Precision Alphanumeric Comparison)
+      const cleanUtr = utr.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (alphanumericText.includes(cleanUtr)) {
+          utrMatch = true;
+      }
+      
+      // Secondary Transaction ID check (for UPI Txn IDs that might differ from UTR)
+      if (!utrMatch) {
+          const txnIdMatches = textUpper.match(/(?:TXN|TRANS|ID)\s*:?\s*([A-Z0-9]{10,})/g);
+          if (txnIdMatches) {
+              for (let match of txnIdMatches) {
+                  const cleanedMatch = match.replace(/[^A-Z0-9]/g, '');
+                  if (cleanedMatch.includes(cleanUtr) || cleanUtr.includes(cleanedMatch)) {
+                      utrMatch = true;
+                      break;
+                  }
+              }
+          }
+      }
+
+      // Dynamic Receiver Verification (Resilient to special character noise)
+      const cleanTargetUpi = targetUpiId.replace(/[^A-Z0-9]/g, '');
+      if (alphanumericText.includes(cleanTargetUpi)) {
+          upiMatch = true;
+      }
+      
+      // Secondary Check: Check if UPI Handle (part after @) exists if full match fails
+      if (!upiMatch && targetUpiId.includes('@')) {
+          const handle = targetUpiId.split('@')[1].toUpperCase().replace(/[^A-Z0-9]/g, '');
+          if (alphanumericText.includes(handle)) {
+             upiMatch = true; // High probability match if merchant handle is present
+          }
+      }
+    } catch (ocrErr) {
+      console.error('Neural OCR Error:', ocrErr);
+    }
+
+    // Final Validation Logic
+    const isAutoVerified = (amountMatch && (utrMatch || upiMatch));
+    const screenshotPath = `/uploads/${file.filename}`;
+    const flagReasons = [];
+    if (!amountMatch) flagReasons.push('AMOUNT_MISMATCH');
+    if (!utrMatch) flagReasons.push('UTR_NOT_FOUND_IN_IMAGE');
+    if (!upiMatch) flagReasons.push('RECEIVER_UPI_MISMATCH');
+
+    // Update Rotation Record if exists
+    if (rotationTx) {
+      rotationTx.utr = utr;
+      rotationTx.screenshot = screenshotPath;
+      rotationTx.status = isAutoVerified ? 'SUCCESS' : 'PENDING_VERIFICATION';
+      rotationTx.confidenceScore = isAutoVerified ? 100 : 50;
+      rotationTx.ocrData = { 
+          rawText: text.substring(0, 1000), 
+          matches: { amountMatch, utrMatch, upiMatch },
+          targetUpiId 
+      };
+      rotationTx.flagReasons = flagReasons;
+      await rotationTx.save();
+    }
+
+    if (!isAutoVerified) {
+       console.warn(`[Neural Engine] Auto-Verification Failed. Flags: ${flagReasons.join(', ')}`);
+       return res.status(200).json({ 
+         success: false,
+         status: 'PENDING_REVIEW',
+         message: 'Neural verification signature is unclear or mismatched. Your proof has been submitted for manual administration review.',
+         results: { amountMatch, utrMatch, upiMatch, targetUpiId, flagReasons }
+       });
+    }
+
+    // Success Flow - Atomic Credit
+    const user = await User.findById(userId);
+    const { cashback } = calculateFinancials(expectedAmount, config);
+
+    user.walletBalance += expectedAmount;
+    user.rewardBalance += cashback;
+    user.totalRewards += cashback;
+    user.totalDeposited += expectedAmount;
+    await user.save();
+
+    // Create Audit Transaction
+    const transaction = await Transaction.create({
+      senderId: userId,
+      receiverId: userId,
+      type: 'add_money',
+      amount: expectedAmount,
+      status: 'SUCCESS',
+      transactionId: utr,
+      referenceId: utr,
+      screenshotUrl: screenshotPath,
+      description: rotationTx ? `P2P Auto-Verified Recharge` : 'Admin Auto-Verified Deposit'
+    });
+
+    await WalletLog.create({
+      userId,
+      action: 'credit',
+      amount: expectedAmount,
+      balanceAfter: user.walletBalance,
+      description: `Auto-Verified Deposit: ₹${expectedAmount}`,
+    });
+
+    // If P2P Rotation -> Update Stock Node & Seller Balance
+    if (rotationTx) {
+      const stock = await Stock.findById(rotationTx.stockId);
+      if (stock) {
+        stock.status = 'SOLD';
+        await stock.save();
+      }
+
+      // Seller Liquidation
+      const seller = await User.findById(rotationTx.sellerId._id);
+      if (seller) {
+        seller.walletBalance = Math.max(0, seller.walletBalance - expectedAmount);
+        await seller.save();
+        
+        await WalletLog.create({
+          userId: seller._id,
+          action: 'debit',
+          amount: expectedAmount,
+          balanceAfter: seller.walletBalance,
+          description: `Node Rotation Liquidation: Cash received by bank.`
+        });
+
+        // Re-sync seller nodes
+        await syncUserStocks(User, Stock, seller._id, seller.walletBalance, config);
+        
+        if (req.io) {
+          req.io.emit('userStatusChanged', { 
+            userId: seller._id, 
+            walletBalance: seller.walletBalance 
+          });
+        }
+      }
+    }
+
+    // Re-sync buyer nodes
+    await syncUserStocks(User, Stock, userId, user.walletBalance, config);
+
+    if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+
+    res.json({
+      success: true,
+      message: 'Neural node activated. Payment auto-verified.',
+      newBalance: user.walletBalance,
+      transactionId: transaction._id
+    });
+
   } catch (err) {
-    res.status(500).json({ message: 'Neural Verification Fault' });
+    console.error('Neural Verify Controller Error:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
 const verifySmsPayment = async (req, res) => {
-  // Logic from recovered code
-  res.json({ success: true, message: 'SMS signal processed' });
+  try {
+    const { amount, utr, source, deviceId } = req.body;
+    const config = await getSystemConfig();
+    
+    console.log(`[Neural Signal] Incoming verifying from ${source}: ₹${amount}, UTR: ${utr}`);
+    
+    // 1. DUPLICATE CHECK (Rule 1: Never trust twice)
+    const exists = await Transaction.findOne({ referenceId: utr });
+    if (exists) {
+       return res.status(400).json({ success: false, message: "Security Alert: Duplicate UTR Signal Blocked." });
+    }
+
+    // 2. LOCATE ACTIVE SESSION (Rule 5: Exact Binding)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const rotationTx = await StockTransaction.findOne({
+       status: 'PENDING_PAYMENT',
+       createdAt: { $gte: fiveMinutesAgo }
+    }).populate('buyerId sellerId');
+
+    if (!rotationTx) {
+       return res.status(404).json({ success: false, message: "Signal Mismatch: No active rotation session found within 5 min window." });
+    }
+
+    // 3. AMOUNT MATCHING (Rule 3: ₹1 Tolerance)
+    const paidAmount = Number(amount);
+    if (Math.abs(rotationTx.amount - paidAmount) > 1) {
+       return res.status(400).json({ success: false, message: "Amount Mismatch: Neural Engine detected deviation > ₹1." });
+    }
+
+    // 4. SOURCE LOGIC (Rule 1 & 2)
+    const isHardTruth = source === 'sms_auto'; // SMS is final truth
+    
+    if (isHardTruth) {
+       const userId = rotationTx.buyerId._id;
+       const user = await User.findById(userId);
+       const seller = await User.findById(rotationTx.sellerId._id);
+       const { cashback } = calculateFinancials(rotationTx.amount, config);
+
+       // Execute Atomic Credit
+       user.walletBalance += rotationTx.amount;
+       user.rewardBalance += cashback;
+       await user.save();
+
+       // Liquidity Rebalance (Seller Node)
+       seller.walletBalance = Math.max(0, seller.walletBalance - rotationTx.amount);
+       await seller.save();
+
+       // Finalize Transaction Audit
+       await Transaction.create({
+         senderId: userId,
+         amount: rotationTx.amount,
+         type: 'add_money',
+         status: 'SUCCESS',
+         referenceId: utr,
+         deviceId: deviceId || 'APK_SIGNAL_BOUND',
+         description: `Neural SMS Verified (Source: ${source})`
+       });
+
+       rotationTx.status = 'SUCCESS';
+       rotationTx.utr = utr;
+       await rotationTx.save();
+
+       // Sync Nodes
+       await syncUserStocks(User, Stock, userId, user.walletBalance, config);
+       await syncUserStocks(User, Stock, seller._id, seller.walletBalance, config);
+       
+       if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+
+       return res.json({ success: true, message: "Neural Signal Verified. Asset Merged." });
+    } else {
+       // Secondary Confirmation (Soft Verified)
+       rotationTx.utr = utr;
+       rotationTx.status = 'PENDING_REVIEW';
+       await rotationTx.save();
+       return res.json({ success: true, message: "Intent Signal Logged. Awaiting SMS Primary Truth." });
+    }
+  } catch (err) {
+    console.error('Neural Logic Fault:', err);
+    res.status(500).json({ success: false, message: "Neural Logic Fault" });
+  }
 };
 
-module.exports = { 
-  executeWalletRecharge, 
-  createOrder, 
-  verifyPayment: fastringCallback, 
-  fastringCallback, 
-  getWalletHistory, 
-  getPublicConfig, 
-  simulatePayment, 
-  requestWithdrawal, 
-  neuralVerifyPayment, 
-  matchP2P, 
-  verifySmsPayment 
-};
+module.exports = { getWalletHistory, getPublicConfig, simulatePayment, requestWithdrawal, neuralVerifyPayment, matchP2P, verifySmsPayment };

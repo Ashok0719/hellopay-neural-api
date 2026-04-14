@@ -26,9 +26,11 @@ const transactionSchema = new mongoose.Schema({
   transactionId: { type: String, unique: true, sparse: true }, // UPI Ref Number
   isOcrVerified: { type: Boolean, default: false },
   referenceId: { type: String, unique: true, sparse: true }, // Internal order ID
-  fastringOrderId: { type: String, unique: true, sparse: true },
+  razorpayOrderId: { type: String, unique: true, sparse: true },
+  razorpayPaymentId: { type: String },
   deviceId: { type: String }, // APK Device ID for safety binding
   ipAddress: { type: String }, // Identity tracking
+  imageHash: { type: String }, // For detecting screenshot reuse
   description: { type: String },
 }, { timestamps: true });
 

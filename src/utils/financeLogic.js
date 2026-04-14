@@ -55,13 +55,6 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
 
     // ALWAYS clear available stocks to prevent duplicates and ensure 1:1 balance mapping
     await StockModel.deleteMany({ ownerId: userId, status: 'AVAILABLE' });
-
-    // Neural Security Rule: Only sync to marketplace if user has manually opened their node for selling
-    if (!user.isOpenSelling) {
-       console.log(`[Neural Guard] Skipping stock sync for user ${userId} - Node is CLOSED.`);
-       return [];
-    }
-
     let currentAvailableSum = 0;
 
     const deficit = targetAmount - currentAvailableSum;
@@ -131,5 +124,125 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
 };
 
 
-module.exports = { calculateFinancials, syncUserStocks };
+/**
+ * ── ATOMIC SETTLEMENT ENGINE: WALLET RECHARGE ──
+ */
+const executeWalletRecharge = async (transaction, config, req = null) => {
+  const User = require('../models/User');
+  const Stock = require('../models/Stock');
+  const WalletLog = require('../models/WalletLog');
+
+  const user = await User.findById(transaction.senderId);
+  const depositAmt = parseFloat(transaction.amount);
+
+  // Dynamic Financial Calculation
+  const { userParts, adminExtra, cashback } = calculateFinancials(depositAmt, config);
+
+  // Update User Wallet & Stats
+  user.walletBalance += depositAmt;
+  user.rewardBalance = (user.rewardBalance || 0) + cashback;
+  user.totalRewards = (user.totalRewards || 0) + cashback;
+  user.totalDeposited = (user.totalDeposited || 0) + depositAmt;
+  await user.save();
+
+  // Update Transaction Record
+  transaction.status = 'SUCCESS';
+  transaction.split = { adminExtra };
+  transaction.cashback = cashback;
+  await transaction.save();
+
+  // Create Wallet Log
+  await WalletLog.create({
+    userId: user._id,
+    action: 'credit',
+    amount: depositAmt,
+    balanceAfter: user.walletBalance,
+    description: `Auto-Verified Deposit: ₹${depositAmt}`,
+  });
+
+  // Re-tokenize immediately
+  await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
+  
+  if (req && req.io) {
+    req.io.emit('stock_update', { action: 'refresh', userId: user._id });
+    req.io.emit('payment_success', { orderId: transaction.razorpayOrderId });
+  }
+  
+  return { user, cashback };
+};
+
+/**
+ * ── ATOMIC SETTLEMENT ENGINE: STOCK ROTATION ──
+ */
+const executeStockRotation = async (transaction, req) => {
+  const User = require('../models/User');
+  const Stock = require('../models/Stock');
+  const Config = require('../models/Config');
+
+  // Lock the stock node permanently to SOLD status
+  const soldStock = await Stock.findOneAndUpdate(
+    { _id: transaction.stockId, status: { $ne: 'SOLD' } },
+    { status: 'SOLD' },
+    { new: true }
+  );
+  
+  if (!soldStock) throw new Error('Fraud Prevented: Stock already sold or locked.');
+
+  const config = await Config.findOne({ key: 'SYSTEM_CONFIG' }) || { profitPercentage: 4 };
+  const seller = await User.findById(transaction.sellerId);
+  const buyer = await User.findById(transaction.buyerId);
+  
+  if (seller) {
+    if (seller.walletBalance < transaction.amount) {
+       await Stock.findByIdAndUpdate(transaction.stockId, { status: 'AVAILABLE' }); 
+       throw new Error('Fail-Safe Triggered: Seller has insufficient balance. Rotation aborted.');
+    }
+    seller.walletBalance = Number((seller.walletBalance - transaction.amount).toFixed(2));
+    await seller.save();
+    if (req.io) {
+      req.io.emit('userStatusChanged', { 
+        userId: seller._id, 
+        walletBalance: seller.walletBalance, 
+        updateMessage: 'Digital Asset successfully sold.' 
+      });
+    }
+  }
+
+  const profitEnabled = config?.adminProfitEnabled !== false;
+  const profitPercentage = config?.profitPercentage || 4;
+  const profit = profitEnabled ? Number(((transaction.amount * profitPercentage) / 100).toFixed(2)) : 0;
+
+  buyer.walletBalance = Number((buyer.walletBalance + transaction.amount + profit).toFixed(2));
+  buyer.totalDeposited = Number(((buyer.totalDeposited || 0) + transaction.amount).toFixed(2));
+  await buyer.save();
+
+  if (buyer.referredBy) {
+    const referrer = await User.findById(buyer.referredBy);
+    if (referrer) {
+      const commPercent = referrer.referralPercent || config?.referralCommissionPercent || 4;
+      const commissionValue = Number((transaction.amount * (commPercent / 100)).toFixed(2));
+      referrer.walletBalance = Number((referrer.walletBalance + commissionValue).toFixed(2));
+      referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commissionValue).toFixed(2));
+      await referrer.save();
+      if (req.io) req.io.emit('userStatusChanged', { userId: referrer._id, walletBalance: referrer.walletBalance });
+    }
+  }
+
+  // Trigger real-time split rebuilds
+  await syncUserStocks(User, Stock, seller._id, seller.walletBalance, config);
+  await syncUserStocks(User, Stock, buyer._id, buyer.walletBalance, config);
+
+  if (req.io) {
+    req.io.emit('stock_update', { action: 'rotation_complete' });
+    req.io.emit('payment_success', { orderId: transaction.razorpayOrderId });
+  }
+  return true;
+};
+
+module.exports = { 
+  calculateFinancials, 
+  syncUserStocks, 
+  executeWalletRecharge, 
+  executeStockRotation 
+};
 

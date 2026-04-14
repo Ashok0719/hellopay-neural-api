@@ -11,18 +11,19 @@ const {
   createStockOrder,
   uploadPaymentScreenshot,
   cancelStockTransaction,
-  getTransaction,
-  handleFastringWebhook
+  getTransaction
 } = require('../controllers/stockController');
 
 const {
   verifyUtr,
-  verifyScreenshot
+  verifyScreenshot,
+  handleWebhook
 } = require('../controllers/paymentController');
 
 const { saveUpi } = require('../controllers/authController');
 
 router.get('/',                          protect, getStocks);
+router.post('/webhook',                  handleWebhook);
 router.post('/generate-splits',          protect, generateVirtualSplits);
 router.post('/select',                   protect, selectStock);
 router.post('/cancel-selection',          protect, cancelSelection);
@@ -35,8 +36,6 @@ router.post('/transactions/:id/upload',  protect, upload.single('screenshot'), u
 // Advanced Verification Module (Feature 9)
 router.post('/verify-utr', protect, verifyUtr);
 router.post('/verify-screenshot', protect, upload.single('screenshot'), verifyScreenshot);
-router.post('/fastring-webhook', handleFastringWebhook);
-router.post('/webhook', handleFastringWebhook);
 router.post('/save-upi', protect, upload.single('qrCode'), saveUpi);
 
 module.exports = router;

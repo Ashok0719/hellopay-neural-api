@@ -1,209 +1,516 @@
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
+const Transaction = require('../models/Transaction');
 const StockTransaction = require('../models/StockTransaction');
-const Payment = require('../models/Payment');
 const User = require('../models/User');
 const Config = require('../models/Config');
-const Transaction = require('../models/Transaction');
+const WalletLog = require('../models/WalletLog');
+const { calculateFinancials, syncUserStocks, executeWalletRecharge, executeStockRotation } = require('../utils/financeLogic');
 const { performOcr } = require('../utils/ocr');
+const { auditUserBehavior } = require('../utils/fraudEngine');
+
+// Initialize Razorpay
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
 /**
- * FEATURE 2: UTR PRIMARY VERIFICATION
+ * @desc    Create Razorpay Order (Wallet or Stock)
+ * @route   POST /api/payments/create-order
+ * @access  Private
  */
-exports.verifyUtr = async (req, res) => {
+const createRazorpayOrder = async (req, res) => {
   try {
-    const { utr, transactionId } = req.body;
-    const userId = req.user._id;
+    const { amount, stockId } = req.body;
+    const user = req.user;
+    let targetAmount = amount;
+    let description = `Wallet Recharge - ₹${amount}`;
+    let type = 'add_money';
 
-    if (!utr || !/^\d{12,22}$/.test(utr)) {
-      return res.status(400).json({ success: false, message: 'Invalid UTR format (12-22 digits required)' });
+    // If stock purchase, fetch stock amount
+    if (stockId) {
+      const Stock = require('../models/Stock');
+      const stock = await Stock.findById(stockId);
+      if (!stock || stock.status !== 'AVAILABLE') {
+        return res.status(404).json({ success: false, message: 'Neural Asset Node not available' });
+      }
+      targetAmount = stock.amount;
+      description = `Stock Purchase - ₹${targetAmount} (Node: ${stockId})`;
+      type = 'buy_stock';
     }
 
-    // Prevent duplicate UTR
-    const existing = await Payment.findOne({ utr });
-    if (existing) {
-      return res.status(400).json({ success: false, message: 'This UTR has already been used' });
+    if (!targetAmount || isNaN(targetAmount) || targetAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid amount' });
     }
 
-    const stockTx = await StockTransaction.findById(transactionId);
-    if (!stockTx) return res.status(404).json({ success: false, message: 'Transaction not found' });
-
-    // Create Payment Record
-    const payment = await Payment.create({
-      userId,
-      transactionId: stockTx._id,
-      amount: stockTx.amount,
-      utr,
-      status: 'pending',
-      verificationMethod: 'UTR'
-    });
-
-    /**
-     * FEATURE 4: AUTO DECISION (UTR ONLY VALID)
-     * If user provided UTR and it's valid/unique, we can mark success (Phase 1)
-     * Note: In a real production environment, you might wait for Screenshot or Bank API.
-     * But per your Feature 4: "If Only UTR valid → SUCCESS (skip screenshot)"
-     */
-    const result = await finalizePayment(payment._id, 'success');
-
-    res.json({ 
-      success: true, 
-      status: result.status, 
-      message: 'UTR verified and balance updated' 
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/**
- * FEATURE 3: SCREENSHOT OCR VERIFICATION
- */
-exports.verifyScreenshot = async (req, res) => {
-  try {
-    const { transactionId, utr, timeSpent } = req.body;
-    const file = req.file;
-
-    if (!file) return res.status(400).json({ success: false, message: 'Screenshot required for automatic verification' });
-
-    const stockTx = await StockTransaction.findById(transactionId);
-    if (!stockTx) return res.status(404).json({ success: false, message: 'Transaction not found' });
-
-    // 1. PERFORM OCR (50% WEIGHT)
-    const ocrResult = await performOcr(file.path);
-    let ocrScore = 0;
-    
-    const amountMatch = ocrResult.extractedAmount === stockTx.amount;
-    const utrMatch = ocrResult.extractedUtr === utr;
-    const isPaid = ocrResult.isSuccessFound;
-    
-    // Fetch receiver UPI from seller
-    const seller = await User.findById(stockTx.sellerId);
-    const receiverUpiMatch = ocrResult.extractedReceiver === seller?.upiId?.toLowerCase();
-
-    if (amountMatch && (utrMatch || isPaid || receiverUpiMatch)) ocrScore = 50;
-    else if (isPaid || utrMatch || receiverUpiMatch) ocrScore = 30;
-
-    // 2. TIME-BASED LOGIC (30% WEIGHT) - Feature 4 & 8
-    let timeScore = 0;
-    const t = Number(timeSpent) || 0;
-    if (t > 30) timeScore = 30;
-    else if (t >= 5 && t <= 25) timeScore = 20;
-    else if (t < 3) timeScore = 0;
-
-    // 3. UTR VALIDITY (20% WEIGHT) - Feature 7
-    let utrScore = 0;
-    const isUtrUnique = !(await Payment.findOne({ utr, transactionId: { $ne: transactionId } }));
-    const isUtrFormatValid = /^\d{12,22}$/.test(utr || '');
-    if (isUtrUnique && isUtrFormatValid) utrScore = 20;
-
-    // 4. FINAL CALCULATION - Feature 8
-    const totalScore = ocrScore + timeScore + utrScore;
-    let finalStatus = 'pending';
-
-    if (totalScore >= 80) finalStatus = 'success';
-    else if (totalScore >= 60) finalStatus = 'suspicious'; // Marked for REVIEW
-    else finalStatus = 'failed';
-
-    // Find or create payment record
-    let payment = await Payment.findOne({ transactionId: stockTx._id });
-    if (!payment) {
-        payment = new Payment({
-            userId: req.user._id,
-            transactionId: stockTx._id,
-            amount: stockTx.amount
-        });
-    }
-
-    payment.utr = utr || ocrResult.extractedUtr;
-    payment.screenshotUrl = '/uploads/' + file.filename;
-    payment.verificationMethod = 'OCR_AUTO';
-    payment.fraudScore = 100 - totalScore; // Confidence Score inverted for fraud tracking
-    payment.status = finalStatus;
-    payment.ocrData = { extractedAmount: ocrResult.extractedAmount, extractedUtr: ocrResult.extractedUtr };
-    
-    await payment.save();
-
-    if (finalStatus === 'success') {
-        await finalizePayment(payment._id, 'success');
-    }
-
-    res.json({ 
-        success: true, 
-        status: finalStatus, 
-        confidenceScore: totalScore,
-        message: finalStatus === 'success' ? 'Fully Verified ✅' : 
-                 finalStatus === 'suspicious' ? 'Under Review ⏳' : 'Verification Failed ❌'
-    });
-
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/**
- * FEATURE 6: WALLET INTEGRATION (Unified Helper)
- */
-async function finalizePayment(paymentId, status) {
-  const payment = await Payment.findById(paymentId);
-  if (payment.status === 'success' && status === 'success') return payment;
-
-  payment.status = status;
-  await payment.save();
-
-  if (status === 'success') {
-    // 1. Update User Wallet
-    const user = await User.findById(payment.userId);
-    if (!user) return payment;
-
-    const depositAmount = payment.amount;
-    user.walletBalance = Number((user.walletBalance + depositAmount).toFixed(2));
-    user.totalDeposited = (user.totalDeposited || 0) + depositAmount;
-    
-    // 2. Create Transaction Record (Internal Ledger)
-    await Transaction.create({
-        senderId: user._id,
-        type: 'add_money',
-        amount: depositAmount,
-        status: 'success',
-        transactionId: payment.utr,
-        description: `Neural Deposit Verified: ${payment.verificationMethod}`
-    });
-
-    // 3. Referral Commission Integration
-    if (user.referredBy) {
-        const referrer = await User.findById(user.referredBy);
-        if (referrer) {
-            const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-            const commPercent = referrer.referralPercent || config?.referralCommissionPercent || 4;
-            const commission = Number((depositAmount * commPercent / 100).toFixed(2));
-
-            if (commission > 0) {
-                referrer.walletBalance = Number((referrer.walletBalance + commission).toFixed(2));
-                referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + commission).toFixed(2));
-                await referrer.save();
-
-                // Log Referral Commission
-                await Transaction.create({
-                    receiverId: referrer._id,
-                    senderId: user._id,
-                    type: 'transfer',
-                    amount: commission,
-                    status: 'success',
-                    description: `Referral Commission from Node ${user.userIdNumber}`
-                });
-            }
-        }
-    }
-
-    await user.save();
-
-    // 4. Update Stock Inventory (Splits)
     const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
-    if (config) {
-        const { syncUserStocks } = require('../utils/financeLogic');
+    if (config && !config.depositEnabled) {
+      return res.status(403).json({ success: false, message: 'Deposits are currently disabled' });
+    }
+
+    const options = {
+      amount: Math.round(targetAmount * 100), // convert to paise
+      currency: 'INR',
+      receipt: `rcpt_${user._id.toString().slice(-6)}_${Date.now()}`,
+      notes: {
+        userId: user._id.toString(),
+        type: type,
+        stockId: stockId || ''
+      }
+    };
+
+    const order = await razorpay.orders.create(options);
+
+    // Create a trace in Transaction ledger
+    await Transaction.create({
+      senderId: user._id,
+      receiverId: user._id,
+      type: type,
+      amount: parseFloat(targetAmount),
+      status: 'PENDING',
+      razorpayOrderId: order.id,
+      description: description
+    });
+
+    res.status(200).json({
+      success: true,
+      order_id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      key_id: process.env.RAZORPAY_KEY_ID,
+      transactionId: order.receipt, // For compatibility with frontend
+      user: {
+        name: user.name,
+        email: user.email,
+        phone: user.phone
+      }
+    });
+  } catch (error) {
+    console.error('[RAZORPAY] Create Order Error:', error);
+    res.status(500).json({ success: false, message: 'Could not create payment order' });
+  }
+};
+
+/**
+ * @desc    Create Razorpay Order for Stock Purchase
+ */
+const createStockOrder = async (req, res) => {
+  try {
+    const { stockId } = req.body;
+    const buyer = await User.findById(req.user._id);
+    const Stock = require('../models/Stock');
+
+    if (buyer.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account locked' });
+    }
+
+    const stock = await Stock.findOne({ _id: stockId, status: 'AVAILABLE' })
+      .populate('ownerId', 'name upiId qrCode');
+    
+    if (!stock) return res.status(400).json({ success: false, message: 'Stock not available' });
+
+    if (stock.ownerId._id.toString() === buyer._id.toString()) {
+      return res.status(400).json({ success: false, message: 'Self-purchase forbidden' });
+    }
+
+    const rzpOrder = await razorpay.orders.create({
+      amount: stock.amount * 100, // amount in paise
+      currency: "INR",
+      receipt: 'order_rcptid_' + Date.now()
+    });
+
+    // Create a transaction record linked to this Razorpay Order
+    await StockTransaction.create({
+       transactionId: 'TXN' + Date.now() + Math.floor(Math.random() * 1000),
+       stockId: stock._id,
+       buyerId: buyer._id,
+       sellerId: stock.ownerId._id,
+       amount: stock.amount,
+       razorpayOrderId: rzpOrder.id,
+       status: 'PENDING_PAYMENT'
+    });
+
+    // Lock the stock temporarily (LOCKED state)
+    stock.status = 'LOCKED';
+    stock.selectionExpires = new Date(Date.now() + 20 * 60 * 1000); // 20 min lock
+    await stock.save();
+
+    res.json({
+      success: true,
+      order: rzpOrder,
+      transactionId: rzpOrder.id,
+      amount: stock.amount,
+      key: process.env.RAZORPAY_KEY_ID,
+      buyerName: buyer.name,
+      buyerEmail: buyer.email || `${buyer.userIdNumber}@hellopay.io`
+    });
+  } catch (err) {
+    console.error('[RAZORPAY] Create Stock Order Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * @desc    Verify Razorpay Payment Signature
+ * @route   POST /api/payments/verify-payment
+ * @access  Private
+ */
+const verifyPayment = async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, message: 'Missing payment signature details' });
+    }
+
+    const body = razorpay_order_id + "|" + razorpay_payment_id;
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(body.toString())
+      .digest('hex');
+
+    const isAuthentic = expectedSignature === razorpay_signature;
+
+    if (!isAuthentic) {
+      console.warn(`[RAZORPAY] Invalid Signature Attempt: Order ${razorpay_order_id}`);
+      return res.status(400).json({ success: false, message: 'Payment verification failed: Signature mismatch' });
+    }
+
+    // signature is valid, but we wait for Webhook for actual credit to be safe (Rule 4)
+    // However, we can update the transaction state to "WAITING_WEBHOOK" or similar
+    const transaction = await Transaction.findOne({ razorpayOrderId: razorpay_order_id });
+    if (transaction && transaction.status === 'PENDING') {
+       transaction.razorpayPaymentId = razorpay_payment_id;
+       await transaction.save();
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Signature verified. Awaiting network confirmation.',
+      razorpay_payment_id 
+    });
+  } catch (error) {
+    console.error('[RAZORPAY] Verification Error:', error);
+    res.status(500).json({ success: false, message: 'Internal verification failure' });
+  }
+};
+
+/**
+ * @desc    Razorpay Webhook Handler (THE TRUTH)
+ * @route   POST /api/payments/webhook
+ * @access  Public (Signature Required)
+ */
+const handleWebhook = async (req, res) => {
+  try {
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const signature = req.headers['x-razorpay-signature'];
+
+    const shasum = crypto.createHmac('sha256', secret);
+    shasum.update(JSON.stringify(req.body));
+    const digest = shasum.digest('hex');
+
+    if (signature !== digest) {
+      console.error('[RAZORPAY WEBHOOK] Invalid Webhook Signature');
+      return res.status(400).send('Invalid signature');
+    }
+
+    const { event, payload } = req.body;
+    console.log(`[RAZORPAY WEBHOOK] Signal Received: ${event}`);
+
+    if (event === 'payment.captured') {
+      const payment = req.body.payload.payment.entity;
+      const orderId = payment.order_id;
+      const paymentId = payment.id;
+      const amount = payment.amount / 100;
+      const notes = payment.notes || {};
+
+      // Idempotency: avoid double processing
+      const transaction = await Transaction.findOne({ razorpayOrderId: orderId });
+      
+      if (!transaction) {
+        console.error(`[RAZORPAY WEBHOOK] Transaction for order ${orderId} not found in database.`);
+        return res.status(200).json({ status: 'Order not found' });
+      }
+
+      if (transaction.status === 'SUCCESS') {
+        console.log(`[RAZORPAY WEBHOOK] Order ${orderId} already settled.`);
+        return res.status(200).json({ status: 'Already processed' });
+      }
+
+      const user = await User.findById(transaction.senderId);
+      if (!user) {
+        console.error(`[RAZORPAY WEBHOOK] User ${transaction.senderId} not found.`);
+        return res.status(200).json({ status: 'User not found' });
+      }
+
+      const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+      const { userParts, adminExtra, cashback } = calculateFinancials(amount, config);
+
+      if (transaction.type === 'buy_stock' || notes.type === 'buy_stock') {
+        // --- STOCK SETTLEMENT PROTOCOL ---
+        const Stock = require('../models/Stock');
+        const StockTransaction = require('../models/StockTransaction');
+        
+        const stock = await Stock.findOne({ 
+          razorpayOrderId: orderId,
+          status: 'LOCKED'
+        });
+
+        if (stock) {
+          const seller = await User.findById(stock.ownerId);
+          
+          // 💰 Seller Liquidation
+          if (seller) {
+            seller.walletBalance = Math.max(0, seller.walletBalance - amount);
+            await seller.save();
+            await WalletLog.create({
+              userId: seller._id,
+              action: 'debit',
+              amount: amount,
+              balanceAfter: seller.walletBalance,
+              description: `Autonomous Node Liquidation (ID: ${paymentId})`
+            });
+            await syncUserStocks(User, Stock, seller._id, seller.walletBalance, config);
+          }
+
+          // 💰 Buyer Credit
+          user.walletBalance += amount;
+          user.rewardBalance += (user.rewardBalance || 0) + cashback;
+          user.totalDeposited += (user.totalDeposited || 0) + amount;
+          await user.save();
+          await WalletLog.create({
+            userId: user._id,
+            action: 'credit',
+            amount: amount,
+            balanceAfter: user.walletBalance,
+            description: `Stock Acquisition Credit: ₹${amount}`
+          });
+
+          // ✅ Finalize Node Status
+          stock.status = 'SOLD';
+          stock.selectedBy = null;
+          await stock.save();
+
+          // Sync Buyer Nodes
+          await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
+
+          // Update StockTransaction record if exists
+          await StockTransaction.findOneAndUpdate(
+            { razorpayOrderId: orderId },
+            { status: 'SUCCESS', paymentId: paymentId }
+          );
+        } else {
+           console.error(`[RAZORPAY WEBHOOK] Stock Node for order ${orderId} not found or not locked.`);
+        }
+      } else {
+        // --- STANDARD WALLET SETTLEMENT ---
+        user.walletBalance += amount;
+        user.rewardBalance += (user.rewardBalance || 0) + cashback;
+        user.totalDeposited += (user.totalDeposited || 0) + amount;
+        await user.save();
+
+        await WalletLog.create({
+          userId: user._id,
+          action: 'credit',
+          amount: amount,
+          balanceAfter: user.walletBalance,
+          description: `Razorpay Neural Settlement: ₹${amount} (ID: ${paymentId})`,
+        });
+
+        // 🔁 Node Rebuilding (Multi-level rotation)
         const Stock = require('../models/Stock');
         await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
-    }
-  }
+      }
 
-  return payment;
-}
+      // ✅ Finalize Transaction Ledger
+      transaction.status = 'SUCCESS';
+      transaction.razorpayPaymentId = paymentId;
+      transaction.split = { adminExtra };
+      transaction.cashback = cashback;
+      await transaction.save();
+
+      console.log(`[RAZORPAY WEBHOOK] Successfully settled ₹${amount} for ${user.email}`);
+      
+      if (req.io) {
+        req.io.emit('stock_update', { action: 'refresh', userId: user._id });
+        req.io.emit('payment_success', { orderId: orderId });
+      }
+    }
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('[RAZORPAY WEBHOOK] Critical Error:', error);
+    res.status(500).json({ status: 'error' });
+  }
+};
+
+/**
+ * @desc    Submit Manual Payment Proof (UTR + Screenshot)
+ * @route   POST /api/payments/submit-proof
+ * @access  Private
+ */
+const submitPaymentProof = async (req, res) => {
+  try {
+    const { amount, utr, paymentApp, stockId } = req.body;
+    const userId = req.user._id;
+    const file = req.file;
+
+    if (!amount || !utr || !file) {
+      return res.status(400).json({ success: false, message: 'Missing neural signals: amount, UTR, and proof required.' });
+    }
+
+    if (utr.length < 12 || utr.length > 22) {
+      return res.status(400).json({ success: false, message: 'Invalid UTR format. Expected 12-22 characters.' });
+    }
+
+    // 1. UTR Duplicity Check
+    const existingTx = await Transaction.findOne({ transactionId: utr });
+    const existingStockTx = await StockTransaction.findOne({ utr: utr });
+    if (existingTx || existingStockTx) {
+      return res.status(400).json({ success: false, message: 'Security Alert: Transaction ID already processed.' });
+    }
+
+    // 2. Screenshot Hash Check (Fraud Prevention)
+    const fs = require('fs');
+    const fileBuffer = fs.readFileSync(file.path);
+    const imageHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    
+    const duplicateImage = await Transaction.findOne({ imageHash });
+    if (duplicateImage) {
+       return res.status(400).json({ success: false, message: 'Fraud Alert: Screenshot already utilized for another transaction.' });
+    }
+
+    // 3. Daily Limit Check
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dailyCount = await Transaction.countDocuments({ 
+      senderId: userId, 
+      createdAt: { $gte: today },
+      type: 'add_money'
+    });
+    if (dailyCount >= 5) {
+      return res.status(403).json({ success: false, message: 'Daily submission limit exceeded. Try again tomorrow.' });
+    }
+
+    const screenshotUrl = `/uploads/${file.filename}`;
+    
+    // 4. Create Pending Transaction
+    const transaction = await Transaction.create({
+      senderId: userId,
+      receiverId: userId,
+      type: stockId ? 'buy_stock' : 'add_money',
+      amount: parseFloat(amount),
+      status: 'PENDING',
+      transactionId: utr,
+      screenshotUrl,
+      imageHash,
+      description: `Manual Verification - ${paymentApp}`,
+      deviceId: req.headers['x-device-id'] || 'WEB_CLIENT',
+      ipAddress: req.headers['x-forwarded-for'] || req.connection.remoteAddress
+    });
+
+    // 5. OCR Auto-Verification (Optional/Hidden Confidence)
+    const ocrResult = await performOcr(file.path);
+    let autoVerified = false;
+
+    if (ocrResult.success) {
+      const amountDiff = Math.abs((ocrResult.extractedAmount || 0) - parseFloat(amount));
+      const utrMatch = ocrResult.extractedUtr === utr;
+      
+      if (amountDiff < 2 && utrMatch && ocrResult.isSuccessFound) {
+        // Log OCR confidence but wait for Admin Review for safety
+        transaction.isOcrVerified = true;
+      }
+    }
+
+    await transaction.save();
+
+    // 6. Notify Admin (Socket.io Alarm)
+    if (req.io) {
+      req.io.emit('new_payment_submitted', {
+        userId,
+        amount,
+        utr,
+        screenshotUrl,
+        transactionId: transaction._id
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Verification in progress. Your proof has been submitted to the Neural Node.',
+      transactionId: transaction._id
+    });
+
+  } catch (err) {
+    console.error('Submit Proof Error:', err);
+    res.status(500).json({ success: false, message: 'Neural Submission Fault' });
+  }
+};
+
+/**
+ * @desc    Admin: Approve Payment
+ */
+const approvePayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const transaction = await Transaction.findById(id);
+    const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+
+    if (!transaction || transaction.status !== 'PENDING') {
+      return res.status(400).json({ success: false, message: 'Invalid transaction node' });
+    }
+
+    // Execute Settlement Logic
+    await executeWalletRecharge(transaction, config, req);
+
+    res.json({ success: true, message: 'Payment Approved and Wallet Credited' });
+
+  } catch (err) {
+    console.error('Approve Payment Error:', err);
+    res.status(500).json({ success: false, message: 'Approval Protocol Failed' });
+  }
+};
+
+/**
+ * @desc    Admin: Reject Payment
+ */
+const rejectPayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const transaction = await Transaction.findById(id);
+
+    if (!transaction || transaction.status !== 'PENDING') {
+      return res.status(400).json({ success: false, message: 'Invalid transaction node' });
+    }
+
+    transaction.status = 'FAILED';
+    transaction.description = reason ? `Rejected: ${reason}` : 'Payment Rejected';
+    await transaction.save();
+
+    if (req.io) {
+      req.io.emit('userStatusChanged', { 
+        userId: transaction.senderId, 
+        paymentStatus: 'FAILED',
+        message: 'Payment Failed: Your proof was rejected by the admin.'
+      });
+    }
+
+    res.json({ success: true, message: 'Payment Rejected' });
+
+  } catch (err) {
+    console.error('Reject Payment Error:', err);
+    res.status(500).json({ success: false, message: 'Rejection Protocol Failed' });
+  }
+};
+
+module.exports = {
+  createRazorpayOrder,
+  createStockOrder,
+  verifyPayment,
+  handleWebhook,
+  submitPaymentProof,
+  approvePayment,
+  rejectPayment
+};
