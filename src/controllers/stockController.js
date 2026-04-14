@@ -540,9 +540,18 @@ exports.cancelStockTransaction = async (req, res) => {
 
 exports.getTransaction = async (req, res) => {
   try {
-    const transaction = await StockTransaction.findById(req.params.id)
+    const { id } = req.params;
+    let transaction = await StockTransaction.findById(id)
       .populate('sellerId', 'name upiId qrCode userIdNumber');
+    
+    if (!transaction) {
+      const Transaction = require('../models/Transaction');
+      transaction = await Transaction.findById(id)
+        .populate('sellerId', 'name upiId qrCode userIdNumber');
+    }
+
     if (!transaction) return res.status(404).json({ success: false, message: 'Node not found' });
+    
     res.json({ success: true, transaction });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
