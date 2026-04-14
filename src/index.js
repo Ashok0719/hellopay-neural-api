@@ -126,6 +126,9 @@ app.use('/api/tasks', require('./routes/taskRoutes'));
 // 🚀 Future-Ready Payment Core (Razorpay)
 app.use('/api/payments', require('./routes/paymentRoutes'));
 
+// Neural Gift Code Module
+app.use('/api/gift-codes', require('./routes/giftCodeRoutes'));
+
 // Feature: Unique UPI Identity Flow
 const { upload }  = require('./middleware/uploadMiddleware');
 app.post('/api/save-upi', protect, upload.single('qrCode'), saveUpi);
