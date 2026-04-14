@@ -32,6 +32,8 @@ const {
   deleteGiftCode: delGC 
 } = require('../controllers/giftCodeController');
 
+const { approvePayment, rejectPayment } = require('../controllers/paymentController');
+
 // Development bypass for admin dashboard since it lacks auth token logic
 const bypassAdmin = async (req, res, next) => {
   let adminUser = await User.findOne({ role: 'admin' });
@@ -68,5 +70,9 @@ router.post('/stock-verify/:id', bypassAdmin, adminVerifyStockTransaction);
 router.post('/gift-codes/generate', bypassAdmin, genGC);
 router.get('/gift-codes', bypassAdmin, getGCs);
 router.delete('/gift-codes/:id', bypassAdmin, delGC);
+
+// Neural Payment Overrides
+router.post('/payments/approve/:id', bypassAdmin, approvePayment);
+router.post('/payments/reject/:id', bypassAdmin, rejectPayment);
 
 module.exports = router;
