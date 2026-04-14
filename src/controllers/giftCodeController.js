@@ -93,14 +93,13 @@ exports.claimGiftCode = async (req, res) => {
 
         await Promise.all([user.save(), giftCode.save()]);
 
-        // Log the transaction
+        // Log the transaction with correct neural context
         await WalletLog.create({
             userId,
             amount: giftCode.amount,
-            type: 'credit',
             action: 'gift_code',
-            description: `Signal Injected: Gift Code [${giftCode.code}]`,
-            status: 'success'
+            balanceAfter: user.walletBalance,
+            description: `Signal Injected: Gift Code [${giftCode.code}]`
         });
 
         res.json({ 
