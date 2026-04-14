@@ -403,12 +403,23 @@ const submitPaymentProof = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Daily submission limit exceeded. Try again tomorrow.' });
     }
 
+    let sellerId = null;
+    if (stockId) {
+      const Stock = require('../models/Stock');
+      const stock = await Stock.findById(stockId);
+      if (stock) {
+        sellerId = stock.ownerId;
+      }
+    }
+
     const screenshotUrl = `/uploads/${file.filename}`;
     
     // 4. Create Pending Transaction
     const transaction = await Transaction.create({
       senderId: userId,
-      receiverId: userId,
+      receiverId: sellerId || userId,
+      sellerId: sellerId,
+      stockId: stockId || null,
       type: stockId ? 'buy_stock' : 'add_money',
       amount: parseFloat(amount),
       status: 'PENDING',

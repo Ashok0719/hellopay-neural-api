@@ -1,8 +1,10 @@
 const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema({
-  senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  receiverId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // The Buyer
+  receiverId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // The Admin or Seller
+  sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // The P2P Seller (for buy_stock)
+  stockId: { type: mongoose.Schema.Types.ObjectId, ref: 'Stock' }, // The Specific Stock Node
   listingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Listing' },
   type: {
     type: String,

@@ -367,6 +367,8 @@ const getAllTransactions = async (req, res) => {
     const txs = await Transaction.find()
       .populate('senderId', 'name userIdNumber')
       .populate('receiverId', 'name userIdNumber')
+      .populate('sellerId', 'name userIdNumber')
+      .populate('stockId', 'stockId')
       .sort({ createdAt: -1 })
       .limit(100);
 
@@ -416,60 +418,88 @@ const reviewTransaction = async (req, res) => {
     const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
 
     if (action === 'approve') {
-      if (transaction.type === 'add_money' || transaction.type === 'buy_stock') {
-        user.walletBalance += transaction.amount;
-        user.totalDeposited = (user.totalDeposited || 0) + transaction.amount;
-        
-        // Task Progress Signal Integration
-        await updateTaskProgress(user, transaction.amount);
-        
-        // Referral Commission Integration
-        if (user.referredBy) {
-          const referrer = await User.findById(user.referredBy);
-          if (referrer) {
-             const commPercent = referrer.referralPercent || config?.referralCommissionPercent || config?.globalCashbackPercent || 4;
-             const comm = Number((transaction.amount * commPercent / 100).toFixed(2));
-             referrer.walletBalance = Number((referrer.walletBalance + comm).toFixed(2));
-             referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + comm).toFixed(2));
-             await referrer.save();
-             await rebuildVirtualSplits(referrer._id, referrer.walletBalance, config);
-             if (req.io) req.io.emit('userStatusChanged', { userId: referrer._id, walletBalance: referrer.walletBalance });
+       if (transaction.type === 'buy_stock') {
+          // --- MANUAL P2P ROTATION ---
+          const { executeStockRotation } = require('../utils/financeLogic');
+          // Map Transaction model to what executeStockRotation expects
+          const rotationTx = {
+             _id: transaction._id,
+             stockId: transaction.stockId,
+             buyerId: transaction.senderId,
+             sellerId: transaction.sellerId,
+             amount: transaction.amount,
+             razorpayOrderId: transaction.razorpayOrderId
+          };
+          await executeStockRotation(rotationTx, req);
+          transaction.status = 'SUCCESS';
+       } else if (transaction.type === 'add_money') {
+          // --- MANUAL WALLET RECHARGE ---
+          user.walletBalance += transaction.amount;
+          user.totalDeposited = (user.totalDeposited || 0) + transaction.amount;
+          
+          // Task Progress Signal Integration
+          await updateTaskProgress(user, transaction.amount);
+          
+          // Referral Commission Integration
+          if (user.referredBy) {
+            const referrer = await User.findById(user.referredBy);
+            if (referrer) {
+               const commPercent = referrer.referralPercent || config?.referralCommissionPercent || config?.globalCashbackPercent || 4;
+               const comm = Number((transaction.amount * commPercent / 100).toFixed(2));
+               referrer.walletBalance = Number((referrer.walletBalance + comm).toFixed(2));
+               referrer.referralEarnings = Number(((referrer.referralEarnings || 0) + comm).toFixed(2));
+               await referrer.save();
+               await syncUserStocks(User, Stock, referrer._id, referrer.walletBalance, config);
+               if (req.io) req.io.emit('userStatusChanged', { userId: referrer._id, walletBalance: referrer.walletBalance });
+            }
           }
-        }
 
-        // Apply default cashback
-        const bonus = (transaction.amount * (config?.globalCashbackPercent || 0)) / 100;
-        if (bonus > 0) {
-          user.rewardBalance = (user.rewardBalance || 0) + bonus;
-          user.totalRewards = (user.totalRewards || 0) + bonus;
-        }
-      } else if (transaction.type === 'withdrawal') {
-        user.totalWithdrawn = (user.totalWithdrawn || 0) + transaction.amount;
-        // Balance was already deducted during requestWithdrawal
-      }
-      
-      transaction.status = 'SUCCESS';
-      await user.save();
+          // Apply default cashback (4%)
+          const bonus = (transaction.amount * (config?.globalCashbackPercent || 0)) / 100;
+          if (bonus > 0) {
+            user.rewardBalance = (user.rewardBalance || 0) + bonus;
+            user.totalRewards = (user.totalRewards || 0) + bonus;
+          }
+
+          transaction.status = 'SUCCESS';
+          await user.save();
+          // Sync buyer nodes
+          await syncUserStocks(User, Stock, user._id, user.walletBalance, config);
+       } else if (transaction.type === 'withdrawal') {
+          user.totalWithdrawn = (user.totalWithdrawn || 0) + transaction.amount;
+          transaction.status = 'SUCCESS';
+          await user.save();
+       }
     } else if (action === 'reject') {
-      // Refund if it was a withdrawal
-      if (transaction.type === 'withdrawal') {
-        user.walletBalance += transaction.amount;
-        await user.save();
-        
-        // Create Refund Log
-        const WalletLog = require('../models/WalletLog');
-        await WalletLog.create({
-          userId: user._id,
-          action: 'credit',
-          amount: transaction.amount,
-          balanceAfter: user.walletBalance,
-          description: `Withdrawal Rejected - Refund: ₹${transaction.amount}`,
-        });
-      }
-      transaction.status = 'FAILED';
+       // Refund if it was a withdrawal
+       if (transaction.type === 'withdrawal') {
+         user.walletBalance += transaction.amount;
+         await user.save();
+         
+         // Create Refund Log
+         const WalletLog = require('../models/WalletLog');
+         await WalletLog.create({
+           userId: user._id,
+           action: 'credit',
+           amount: transaction.amount,
+           balanceAfter: user.walletBalance,
+           description: `Withdrawal Rejected - Refund: ₹${transaction.amount}`,
+         });
+       }
+       transaction.status = 'FAILED';
     }
 
     await transaction.save();
+    
+    if (req.io) {
+       req.io.emit('userStatusChanged', { 
+         userId: transaction.senderId, 
+         walletBalance: user.walletBalance,
+         paymentStatus: transaction.status
+       });
+       req.io.emit('stock_update', { action: 'refresh' });
+    }
+    
     res.json({ message: `Transaction ${action}d successfully`, status: transaction.status });
   } catch (err) {
     res.status(500).json({ message: 'Review action failed' });
