@@ -8,11 +8,14 @@ const StockTransaction = require('../models/StockTransaction');
 const crypto = require('crypto');
 const Razorpay = require('razorpay');
 
-// Razorpay Instance
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET
-});
+// Razorpay Instance (Safely Initialized)
+let razorpay = null;
+if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+  razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
+  });
+}
 
 // Optimized Neural OCR Engine (Initialized at startup for Instant Verification)
 let ocrWorker = null;

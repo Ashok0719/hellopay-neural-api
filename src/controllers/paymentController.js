@@ -9,11 +9,16 @@ const { calculateFinancials, syncUserStocks, executeWalletRecharge, executeStock
 const { performOcr } = require('../utils/ocr');
 const { auditUserBehavior } = require('../utils/fraudEngine');
 
-// Initialize Razorpay
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+// Initialize Razorpay Safely
+let razorpay = null;
+if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+  razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET,
+  });
+} else {
+  console.log('[NEURAL] Warning: Razorpay Credentials missing. Autonomous gateway disabled.');
+}
 
 /**
  * @desc    Create Razorpay Order (Wallet or Stock)
@@ -60,6 +65,9 @@ const createRazorpayOrder = async (req, res) => {
       }
     };
 
+    if (!razorpay) {
+      return res.status(503).json({ success: false, message: 'Autonomous Payment Node offline. Please use Manual Verification.' });
+    }
     const order = await razorpay.orders.create(options);
 
     // Create a trace in Transaction ledger
@@ -114,6 +122,9 @@ const createStockOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Self-purchase forbidden' });
     }
 
+    if (!razorpay) {
+      return res.status(503).json({ success: false, message: 'Autonomous Payment Node offline. Please use Manual Verification.' });
+    }
     const rzpOrder = await razorpay.orders.create({
       amount: stock.amount * 100, // amount in paise
       currency: "INR",

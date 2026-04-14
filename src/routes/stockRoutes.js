@@ -15,8 +15,6 @@ const {
 } = require('../controllers/stockController');
 
 const {
-  verifyUtr,
-  verifyScreenshot,
   handleWebhook
 } = require('../controllers/paymentController');
 
@@ -34,8 +32,6 @@ router.post('/transactions/:transactionId/cancel', protect, cancelStockTransacti
 router.post('/transactions/:id/upload',  protect, upload.single('screenshot'), uploadPaymentScreenshot);
 
 // Advanced Verification Module (Feature 9)
-router.post('/verify-utr', protect, verifyUtr);
-router.post('/verify-screenshot', protect, upload.single('screenshot'), verifyScreenshot);
 router.post('/save-upi', protect, upload.single('qrCode'), saveUpi);
 
 module.exports = router;
