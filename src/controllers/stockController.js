@@ -163,10 +163,12 @@ exports.buyStock = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please add your UPI ID before buying stock' });
     }
 
-    // PIN Authentication Protocol
+    // PIN Authentication Protocol - DISABLED as per user request
+    /*
     if (!pin || !(await buyer.matchPin(pin))) {
       return res.status(401).json({ success: false, message: 'Safety Protocol: Invalid Security PIN' });
     }
+    */
 
     const stock = await Stock.findOne({ 
       _id: stockId, 
