@@ -501,6 +501,23 @@ const approvePayment = async (req, res) => {
        await executeWalletRecharge(transaction, config, req);
     }
 
+    // ✅ Emit SUCCESS to user's pay page
+    if (req.io) {
+      const targetUserId = isStockTx ? transaction.buyerId?.toString() : transaction.senderId?.toString();
+      req.io.emit('payment_settled', { 
+        transactionId: id, 
+        status: 'SUCCESS',
+        userId: targetUserId,
+        amount: transaction.amount
+      });
+      req.io.emit('userStatusChanged', { 
+        userId: targetUserId,
+        paymentStatus: 'SUCCESS',
+        walletBalance: null // triggers client-side refresh
+      });
+      req.io.emit('stock_update', { action: 'refresh' });
+    }
+
     res.json({ success: true, message: 'Payment Approved and Settlement Executed' });
 
   } catch (err) {
