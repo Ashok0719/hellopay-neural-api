@@ -13,15 +13,16 @@ router.post('/razorpay-webhook', handleWebhook); // Public for Razorpay delivery
 router.post('/submit-proof', protect, upload.single('screenshot'), submitPaymentProof);
 router.post('/preview-proof', protect, upload.single('screenshot'), async (req, res) => {
   try {
-    const { transactionId } = req.body;
+    const { transactionId, humanId } = req.body;
     if (!req.file || !transactionId) return res.status(400).json({ success: false });
 
     const previewUrl = `/uploads/${req.file.filename}`;
     
-    // Notify Admin LIVE
+    // Notify Admin LIVE with dual-matching signals
     if (req.io) {
       req.io.emit('payment_proof_preview', {
         transactionId,
+        humanId,
         previewUrl,
         userId: req.user._id
       });
