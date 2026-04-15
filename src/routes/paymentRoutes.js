@@ -18,6 +18,17 @@ router.post('/preview-proof', protect, upload.single('screenshot'), async (req, 
 
     const previewUrl = `/uploads/${req.file.filename}`;
     
+    // ⚡ NEURAL PERSISTENCE: Save to DB immediately so it survives refreshes
+    const StockTransaction = require('../models/StockTransaction');
+    const Transaction = require('../models/Transaction');
+    
+    // Try updating StockTransaction first
+    const st = await StockTransaction.findByIdAndUpdate(transactionId, { screenshot: previewUrl }, { new: true });
+    if (!st) {
+      // Fallback to Wallet Transaction
+      await Transaction.findByIdAndUpdate(transactionId, { screenshotUrl: previewUrl });
+    }
+
     // Notify Admin LIVE with dual-matching signals
     if (req.io) {
       req.io.emit('payment_proof_preview', {
