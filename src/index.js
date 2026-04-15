@@ -107,7 +107,12 @@ app.use('/api/', limiter);
 
 const path = require('path');
 
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Serve static uploads with explicit CORS for cross-origin admin panel visibility
+app.use('/uploads', (req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET");
+  next();
+}, express.static(path.join(__dirname, '../uploads')));
 
 // Routes
 const { saveUpi } = require('./controllers/authController');
