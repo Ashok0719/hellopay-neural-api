@@ -112,7 +112,7 @@ app.use('/uploads', (req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET");
   next();
-}, express.static(path.join(__dirname, '../uploads')));
+}, express.static(path.join(process.cwd(), 'uploads')));
 
 // Routes
 const { saveUpi } = require('./controllers/authController');
@@ -142,6 +142,23 @@ app.get('/', (req, res) => res.send('HelloPay Neural API - Online'));
 app.get('/api/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 app.use(errorHandler);
+ 
+// Debug Endpoint to verify path resolution on Cloud Hosting
+app.get('/api/debug-uploads', (req, res) => {
+  const fs = require('fs');
+  const path = require('path');
+  const dir = path.join(process.cwd(), 'uploads');
+  const exists = fs.existsSync(dir);
+  const files = exists ? fs.readdirSync(dir) : [];
+  res.json({
+    cwd: process.cwd(),
+    dirname: __dirname,
+    uploadsDir: dir,
+    exists,
+    files_count: files.length,
+    files: files.slice(0, 5) // first 5 files
+  });
+});
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`HelloPay Neural Server running on port ${PORT}`));
