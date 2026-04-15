@@ -139,6 +139,10 @@ const login = async (req, res) => {
     walletBalance: user.walletBalance,
     rewardBalance: user.rewardBalance || 0,
     isOpenSelling: user.isOpenSelling || false,
+    dailyDepositAmount: user.dailyDepositAmount || 0,
+    weeklyDepositAmount: user.weeklyDepositAmount || 0,
+    monthlyDepositAmount: user.monthlyDepositAmount || 0,
+    isSignupBonusLocked: user.isSignupBonusLocked,
     token: token, // This token will now be saved in localStorage by the frontend
   });
 };
@@ -200,6 +204,10 @@ const getUserProfile = async (req, res) => {
       rewardBalance: user.rewardBalance || 0,
       totalRewards: user.totalRewards || 0,
       referralBonusAmount: user.referralBonusAmount || 0,
+      isSignupBonusLocked: user.isSignupBonusLocked,
+      dailyDepositAmount: user.dailyDepositAmount || 0,
+      weeklyDepositAmount: user.weeklyDepositAmount || 0,
+      monthlyDepositAmount: user.monthlyDepositAmount || 0,
       isOpenSelling: user.isOpenSelling || false,
       token: generateToken(user._id)
     });

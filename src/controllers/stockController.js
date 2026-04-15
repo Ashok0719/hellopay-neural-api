@@ -128,19 +128,18 @@ exports.generateVirtualSplits = async (req, res) => {
     const user   = await User.findById(req.user._id);
     const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
 
-    // Enforce Identity Signal (UPI) for split generation
-    if (!user.upiId) {
-      return res.status(400).json({ success: false, message: 'Identity Signal missing: Please bind a UPI ID to generate virtual assets.' });
-    }
+    // Enforce Neural Bonus Lock: Subtract locked signup bonus from spendable balance
+    const spendableBalance = user.isSignupBonusLocked ? Math.max(0, user.walletBalance - 100) : user.walletBalance;
 
-    const created = await rebuildVirtualSplits(user._id, user.walletBalance, config);
+    const created = await rebuildVirtualSplits(user._id, spendableBalance, config);
 
     req.io.emit('stock_update', { action: 'splits_generated', userId: user._id });
     res.json({
       success:    true,
       message:    `Generated ${created.length} virtual split units`,
       splits:     created,
-      walletBalance: user.walletBalance   // wallet stays untouched
+      walletBalance: user.walletBalance,
+      spendableBalance  // wallet stays untouched, but splits generated from spendable
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
