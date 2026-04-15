@@ -561,11 +561,28 @@ const saveUpi = async (req, res) => {
 
 const completeProfile = async (req, res) => {
   try {
-    const { name, password } = req.body;
+    const { name, password, referralCode } = req.body;
     const user = await User.findById(req.user._id);
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Handle Referral Linkage if not already referred
+    if (referralCode && !user.referredBy) {
+      const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
+      if (referrer && referrer._id.toString() !== user._id.toString()) {
+        user.referredBy = referrer._id;
+        
+        // Grant Referral Bonus if applicable
+        const config = await Config.findOne({ key: 'SYSTEM_CONFIG' });
+        const bonus = config?.referralBonus || 100;
+        user.walletBalance = (user.walletBalance || 0) + bonus;
+        user.referralBonusAmount = (user.referralBonusAmount || 0) + bonus;
+
+        await User.findByIdAndUpdate(referrer._id, { $inc: { referralCount: 1 } });
+        console.log(`[NEURAL GOOGLE] Referral Applied: ${referralCode}`);
+      }
     }
 
     user.name = name || user.name;
