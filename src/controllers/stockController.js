@@ -472,10 +472,11 @@ exports.uploadPaymentScreenshot = async (req, res) => {
        // Release stock node
        const stock = await Stock.findById(transaction.stockId);
        if (stock) {
-         stock.status = 'AVAILABLE';
-         stock.lockedUntil = null;
-         await stock.save();
-       }
+          stock.status = 'AVAILABLE';
+          stock.lockedUntil = null;
+          await stock.save();
+          if (req.io) req.io.emit('stock_update', { action: 'refresh' });
+        }
        
        return res.status(400).json({ 
          success: false, 
