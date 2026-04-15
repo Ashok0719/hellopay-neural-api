@@ -107,10 +107,11 @@ app.use('/api/', limiter);
 
 const path = require('path');
 
-// Serve static uploads with explicit CORS for cross-origin admin panel visibility
+// Serve static uploads with explicit CORS and CORP for cross-origin admin panel visibility
 app.use('/uploads', (req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET");
+  res.header("Cross-Origin-Resource-Policy", "cross-origin");
   next();
 }, express.static(path.join(process.cwd(), 'uploads')));
 
