@@ -19,13 +19,65 @@ if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
 
 // Optimized Neural OCR Engine (Initialized at startup for Instant Verification)
 let ocrWorker = null;
+let ocrInitializing = false;
+
 const initOCR = async () => {
-  if (ocrWorker) return;
-  const { createWorker } = require('tesseract.js');
-  ocrWorker = await createWorker('eng');
-  console.log('[Neural OCR] Engine Primed and Ready.');
+  if (ocrWorker) return ocrWorker;
+  if (ocrInitializing) {
+    // Wait for the existing init to complete
+    let waited = 0;
+    while (ocrInitializing && waited < 15000) {
+      await new Promise(r => setTimeout(r, 200));
+      waited += 200;
+    }
+    return ocrWorker;
+  }
+  ocrInitializing = true;
+  try {
+    const { createWorker } = require('tesseract.js');
+    ocrWorker = await createWorker('eng', 1, {
+      logger: () => {}, // Suppress verbose logs for speed
+    });
+    console.log('[Neural OCR] Engine Primed and Ready.');
+  } catch (err) {
+    console.error('[Neural OCR] Init Failed:', err.message);
+    ocrWorker = null;
+  } finally {
+    ocrInitializing = false;
+  }
+  return ocrWorker;
 };
-initOCR();
+
+// Reset worker on error so next request gets a fresh instance
+const resetOCR = async () => {
+  try {
+    if (ocrWorker) await ocrWorker.terminate();
+  } catch (_) {}
+  ocrWorker = null;
+};
+
+// OCR with hard timeout — returns null text if it takes too long
+const recognizeWithTimeout = (worker, filePath, timeoutMs = 15000) => {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      console.warn('[Neural OCR] Timeout hit — skipping OCR, routing to manual review.');
+      resolve(null);
+    }, timeoutMs);
+
+    worker.recognize(filePath)
+      .then(result => {
+        clearTimeout(timer);
+        resolve(result.data.text);
+      })
+      .catch(err => {
+        clearTimeout(timer);
+        console.error('[Neural OCR] Recognize error:', err.message);
+        resolve(null);
+      });
+  });
+};
+
+initOCR().catch(console.error);
 
 const expireStaleOrders = async () => {
   const staleLimit = new Date(Date.now() - 5 * 60 * 1000); // 5 Minutes
@@ -323,65 +375,86 @@ const neuralVerifyPayment = async (req, res) => {
        console.log(`[Neural Flow] P2P Rotation Detected. Verifying against Seller: ${targetUpiId}`);
     }
 
+    let ocrTimedOut = false;
     try {
-      console.log(`[Neural Engine] Starting Instant OCR Analysis for ${file.filename}...`);
-      if (!ocrWorker) await initOCR();
-      const { data: { text } } = await ocrWorker.recognize(file.path);
-      const textUpper = text.toUpperCase();
-      const alphanumericText = textUpper.replace(/[^A-Z0-9]/g, ''); // Ultra-Clean stream
-      
-      // Amount Extraction (Handles ₹, commas, and decimals)
-      const amountRegex = /(?:RS|INR|₹)?\s*([\d,]+(?:\.\d{2})?)/g;
-      let amountMatchTarget = false;
-      let m;
-      while ((m = amountRegex.exec(textUpper)) !== null) {
-          const val = parseFloat(m[1].replace(/,/g, ''));
-          if (Math.abs(val - expectedAmount) <= 2) {
-              amountMatchTarget = true;
+      console.log(`[Neural Engine] Fast OCR scan for ${file.filename} (15s max)...`);
+      const worker = await initOCR();
+
+      if (!worker) {
+        // Worker failed to init — skip OCR, send to manual review
+        console.warn('[Neural OCR] Worker unavailable. Routing to manual review.');
+        ocrTimedOut = true;
+      } else {
+        const text = await recognizeWithTimeout(worker, file.path, 15000);
+
+        if (text === null) {
+          // OCR timed out
+          ocrTimedOut = true;
+          await resetOCR();
+          initOCR().catch(console.error); // Re-prime for next request
+        } else {
+          const textUpper = text.toUpperCase();
+          const alphanumericText = textUpper.replace(/[^A-Z0-9]/g, '');
+
+          // Amount Extraction — lenient ₹5 tolerance for rounding
+          const amountRegex = /(?:RS\.?|INR|₹)?\s*([\d,]+(?:\.\d{1,2})?)/g;
+          let m;
+          while ((m = amountRegex.exec(textUpper)) !== null) {
+            const val = parseFloat(m[1].replace(/,/g, ''));
+            if (val > 0 && Math.abs(val - expectedAmount) <= 5) {
+              amountMatch = true;
               break;
+            }
           }
-      }
-      amountMatch = amountMatchTarget;
 
-      // UTR / Transaction ID Extraction (High Precision Alphanumeric Comparison)
-      const cleanUtr = utr.toUpperCase().replace(/[^A-Z0-9]/g, '');
-      if (alphanumericText.includes(cleanUtr)) {
-          utrMatch = true;
-      }
-      
-      // Secondary Transaction ID check (for UPI Txn IDs that might differ from UTR)
-      if (!utrMatch) {
-          const txnIdMatches = textUpper.match(/(?:TXN|TRANS|ID)\s*:?\s*([A-Z0-9]{10,})/g);
-          if (txnIdMatches) {
-              for (let match of txnIdMatches) {
-                  const cleanedMatch = match.replace(/[^A-Z0-9]/g, '');
-                  if (cleanedMatch.includes(cleanUtr) || cleanUtr.includes(cleanedMatch)) {
-                      utrMatch = true;
-                      break;
-                  }
+          // UTR check — full or partial (first 8 chars) match
+          const cleanUtr = utr.toUpperCase().replace(/[^A-Z0-9]/g, '');
+          if (alphanumericText.includes(cleanUtr)) {
+            utrMatch = true;
+          } else if (cleanUtr.length >= 8 && alphanumericText.includes(cleanUtr.substring(0, 8))) {
+            utrMatch = true; // Partial prefix match
+          } else {
+            // Secondary check by TXN/TRANS label
+            const txnIdMatches = textUpper.match(/(?:TXN|TRANS(?:ACTION)?|REF|ID)\s*[:#]?\s*([A-Z0-9]{8,})/g);
+            if (txnIdMatches) {
+              for (const match of txnIdMatches) {
+                const cleaned = match.replace(/[^A-Z0-9]/g, '');
+                if (cleaned.includes(cleanUtr) || cleanUtr.includes(cleaned)) {
+                  utrMatch = true;
+                  break;
+                }
               }
+            }
           }
-      }
 
-      // Dynamic Receiver Verification (Resilient to special character noise)
-      const cleanTargetUpi = targetUpiId.replace(/[^A-Z0-9]/g, '');
-      if (alphanumericText.includes(cleanTargetUpi)) {
-          upiMatch = true;
-      }
-      
-      // Secondary Check: Check if UPI Handle (part after @) exists if full match fails
-      if (!upiMatch && targetUpiId.includes('@')) {
-          const handle = targetUpiId.split('@')[1].toUpperCase().replace(/[^A-Z0-9]/g, '');
-          if (alphanumericText.includes(handle)) {
-             upiMatch = true; // High probability match if merchant handle is present
+          // UPI check — full or handle-only match
+          const cleanTargetUpi = targetUpiId.replace(/[^A-Z0-9]/g, '');
+          if (alphanumericText.includes(cleanTargetUpi)) {
+            upiMatch = true;
+          } else if (targetUpiId.includes('@')) {
+            const handle = targetUpiId.split('@')[1].toUpperCase().replace(/[^A-Z0-9]/g, '');
+            if (alphanumericText.includes(handle)) upiMatch = true;
           }
+
+          // SUCCESS keyword as bonus confirmation
+          if (/SUCCESS|PAID|PAYMENT SUCCESSFUL|COMPLETED|DONE|SENT|TRANSFERRED/i.test(textUpper)) {
+            if (amountMatch) utrMatch = true; // Success keyword + amount = trust it
+          }
+
+          console.log(`[Neural OCR] Results — Amount: ${amountMatch}, UTR: ${utrMatch}, UPI: ${upiMatch}`);
+        }
       }
     } catch (ocrErr) {
-      console.error('Neural OCR Error:', ocrErr);
+      console.error('[Neural OCR] Unexpected error:', ocrErr.message);
+      await resetOCR();
+      initOCR().catch(console.error);
+      ocrTimedOut = true;
     }
 
     // Final Validation Logic
-    const isAutoVerified = (amountMatch && (utrMatch || upiMatch));
+    // Lenient: amount match alone is sufficient for auto-verify (OCR misses UTR/UPI often)
+    // If OCR timed out → always route to manual review
+    const isAutoVerified = !ocrTimedOut && amountMatch;
     const screenshotPath = `/uploads/${file.filename}`;
     const flagReasons = [];
     if (!amountMatch) flagReasons.push('AMOUNT_MISMATCH');
@@ -393,23 +466,27 @@ const neuralVerifyPayment = async (req, res) => {
       rotationTx.utr = utr;
       rotationTx.screenshot = screenshotPath;
       rotationTx.status = isAutoVerified ? 'SUCCESS' : 'PENDING_VERIFICATION';
-      rotationTx.confidenceScore = isAutoVerified ? 100 : 50;
+      rotationTx.confidenceScore = isAutoVerified ? 100 : (ocrTimedOut ? 0 : 50);
       rotationTx.ocrData = { 
-          rawText: text.substring(0, 1000), 
+          rawText: ocrTimedOut ? '[OCR_TIMEOUT]' : '(scanned)',
           matches: { amountMatch, utrMatch, upiMatch },
           targetUpiId 
       };
+      if (ocrTimedOut) flagReasons.push('OCR_TIMEOUT');
       rotationTx.flagReasons = flagReasons;
       await rotationTx.save();
     }
 
     if (!isAutoVerified) {
-       console.warn(`[Neural Engine] Auto-Verification Failed. Flags: ${flagReasons.join(', ')}`);
+       const timeoutMsg = ocrTimedOut 
+         ? 'Verification engine timed out. Your proof has been submitted for manual admin review — you will be notified shortly.'
+         : 'Neural signals unclear. Your proof has been submitted for manual administration review.';
+       console.warn(`[Neural Engine] Flags: ${flagReasons.join(', ')}`);
        return res.status(200).json({ 
          success: false,
          status: 'PENDING_REVIEW',
-         message: 'Neural verification signature is unclear or mismatched. Your proof has been submitted for manual administration review.',
-         results: { amountMatch, utrMatch, upiMatch, targetUpiId, flagReasons }
+         message: timeoutMsg,
+         results: { amountMatch, utrMatch, upiMatch, targetUpiId, flagReasons, ocrTimedOut }
        });
     }
 
