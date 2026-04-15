@@ -293,6 +293,7 @@ const verifyUpi = async (req, res) => {
     // In a real app, check bank API or static lookup
     if (utr && utr.length >= 10) {
       user.isUpiVerified = true;
+      user.isOpenSelling = true; // Auto-enable selling on verification
       await user.save();
 
       if (req.io) {
@@ -542,6 +543,7 @@ const saveUpi = async (req, res) => {
     }
 
     user.isUpiVerified = true; 
+    user.isOpenSelling = true; // Auto-enable selling when UPI is added
     user.upiModifiedAt = new Date();
     await user.save();
 
