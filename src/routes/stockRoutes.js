@@ -34,4 +34,31 @@ router.post('/transactions/:id/upload',  protect, upload.single('screenshot'), u
 // Advanced Verification Module (Feature 9)
 router.post('/save-upi', protect, upload.single('qrCode'), saveUpi);
 
+// Neural Alert: Notify admin when user enters payment section
+router.post('/notify-payment-entry', protect, async (req, res) => {
+  try {
+    const { amount, type } = req.body;
+    const userName = req.user?.name || 'Unknown User';
+    const userId = req.user?._id;
+
+    // Broadcast to all admin clients via socket
+    if (req.io) {
+      req.io.emit('new_payment_session', {
+        userName,
+        userId,
+        amount,
+        type: type || 'stock_buy',
+        timestamp: new Date().toISOString(),
+        message: `${userName} has entered the payment section for ₹${amount}`
+      });
+      console.log(`[Neural Alert] Payment session started by ${userName} for ₹${amount}`);
+    }
+
+    res.json({ success: true, message: 'Admin notified' });
+  } catch (err) {
+    console.error('Notify payment entry error:', err);
+    res.status(500).json({ success: false });
+  }
+});
+
 module.exports = router;
