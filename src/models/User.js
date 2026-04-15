@@ -24,7 +24,6 @@ const userSchema = new mongoose.Schema({
   referralEarnings: { type: Number, default: 0 },
   referralCount: { type: Number, default: 0 },
   referralBonusAmount: { type: Number, default: 0 }, // ₹100 sign-up bonus, locked until deposit
-  isSignupBonusLocked: { type: Boolean, default: true },
   upiId: { type: String, unique: true, sparse: true }, // Ensured one UPI per global node
   isUpiVerified: { type: Boolean, default: false },
   upiModifiedAt: { type: Date },
@@ -39,8 +38,8 @@ const userSchema = new mongoose.Schema({
   weeklyDepositAmount: { type: Number, default: 0 },
   monthlyDepositAmount: { type: Number, default: 0 },
   dailyTaskGoal: { type: Number, default: 5000 },
-  weeklyTaskGoal: { type: Number, default: 150000 },
-  monthlyTaskGoal: { type: Number, default: 500000 },
+  weeklyTaskGoal: { type: Number, default: 15000 },
+  monthlyTaskGoal: { type: Number, default: 50000 },
   lastDailyClaimAt: { type: Date },
   lastWeeklyClaimAt: { type: Date },
   lastMonthlyClaimAt: { type: Date },

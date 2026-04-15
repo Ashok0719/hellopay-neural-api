@@ -46,7 +46,8 @@ const syncUserStocks = async (UserModel, StockModel, userId, walletBalance, conf
     if (!user) throw new Error('Neural Node Not Registered');
 
     // ── FINANCIAL CONSENSUS ENGINE ──
-    const lockedBonus = user.isSignupBonusLocked ? (user.referralBonusAmount || 100) : 0;
+    const minDeposit = config.minDeposit || 100;
+    const lockedBonus = user.totalDeposited < minDeposit ? (user.referralBonusAmount || 0) : 0;
     const tradableBalance = Math.max(0, user.walletBalance - lockedBonus);
     
     // Strict requirement: Only convert multiples of ₹100 into stock nodes
@@ -146,15 +147,6 @@ const executeWalletRecharge = async (transaction, config, req = null) => {
   user.rewardBalance = (user.rewardBalance || 0) + cashback;
   user.totalRewards = (user.totalRewards || 0) + cashback;
   user.totalDeposited = (user.totalDeposited || 0) + depositAmt;
-  
-  // Neural Unlock: First deposit releases the signup bonus for mesh activities
-  user.isSignupBonusLocked = false;
-  
-  // Update Task Telemetry
-  user.dailyDepositAmount = (user.dailyDepositAmount || 0) + depositAmt;
-  user.weeklyDepositAmount = (user.weeklyDepositAmount || 0) + depositAmt;
-  user.monthlyDepositAmount = (user.monthlyDepositAmount || 0) + depositAmt;
-  
   await user.save();
 
   // Update Transaction Record
