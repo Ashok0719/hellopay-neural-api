@@ -113,7 +113,7 @@ app.use('/uploads', (req, res, next) => {
   res.header("Access-Control-Allow-Methods", "GET");
   res.header("Cross-Origin-Resource-Policy", "cross-origin");
   next();
-}, express.static(path.join(process.cwd(), 'uploads')));
+}, express.static(process.env.PERSISTENT_STORAGE_PATH || path.join(process.cwd(), 'uploads')));
 
 // Routes
 const { saveUpi } = require('./controllers/authController');
