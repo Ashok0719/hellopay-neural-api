@@ -365,17 +365,17 @@ const getAllTransactions = async (req, res) => {
   try {
     // 1. Fetch Legacy Static Transactions
     const txs = await Transaction.find()
-      .populate('senderId', 'name userIdNumber')
-      .populate('receiverId', 'name userIdNumber')
-      .populate('sellerId', 'name userIdNumber')
+      .populate('senderId', 'name userIdNumber pin')
+      .populate('receiverId', 'name userIdNumber pin')
+      .populate('sellerId', 'name userIdNumber pin')
       .populate('stockId', 'stockId')
       .sort({ createdAt: -1 })
       .limit(100);
 
     // 2. Fetch P2P Neural Stock Transactions
     const stockTxs = await StockTransaction.find()
-      .populate('buyerId', 'name userIdNumber')
-      .populate('sellerId', 'name userIdNumber')
+      .populate('buyerId', 'name userIdNumber pin')
+      .populate('sellerId', 'name userIdNumber pin')
       .populate('stockId', 'stockId')
       .sort({ createdAt: -1 })
       .limit(100);
@@ -384,6 +384,12 @@ const getAllTransactions = async (req, res) => {
     const unified = [
       ...txs.map(t => ({
         ...t._doc,
+        // Normalize: map senderId/receiverId to buyerId/sellerId for admin UI
+        buyerId: t.senderId,
+        sellerId: t.sellerId || t.receiverId,
+        // Ensure screenshot field is available (Transaction uses screenshotUrl)
+        screenshot: t._doc.screenshot || t._doc.screenshotUrl,
+        screenshotUrl: t._doc.screenshotUrl || t._doc.screenshot,
         category: (t.type === 'withdrawal' || t.action === 'debit') ? 'Purchase' : 'Receive',
         user: t.senderId || t.receiverId
       })),
@@ -392,6 +398,9 @@ const getAllTransactions = async (req, res) => {
         type: 'ROTATION',
         category: 'Purchase/Receive', // Mixed since it involves two users
         description: `P2P Neural Rotation: ${s.stockId?.stockId || 'ID_' + s._id}`,
+        // Ensure screenshotUrl field is available (StockTransaction uses screenshot)
+        screenshotUrl: s._doc.screenshotUrl || s._doc.screenshot,
+        screenshot: s._doc.screenshot || s._doc.screenshotUrl,
         buyer: s.buyerId,
         seller: s.sellerId,
         user: s.buyerId // For admin list view mapping
