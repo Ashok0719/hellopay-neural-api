@@ -108,12 +108,15 @@ app.use('/api/', limiter);
 const path = require('path');
 
 // Serve static uploads with explicit CORS and CORP for cross-origin admin panel visibility
+const uploadsPath = process.env.PERSISTENT_STORAGE_PATH || path.join(process.cwd(), 'uploads');
+const fallbackUploadsPath = path.join(__dirname, '../uploads');
+
 app.use('/uploads', (req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET");
   res.header("Cross-Origin-Resource-Policy", "cross-origin");
   next();
-}, express.static(process.env.PERSISTENT_STORAGE_PATH || path.join(process.cwd(), 'uploads')));
+}, express.static(uploadsPath), express.static(fallbackUploadsPath));
 
 // Routes
 const { saveUpi } = require('./controllers/authController');
